@@ -1,0 +1,17 @@
+# Restic binary (must be downloaded separately)
+Restic/restic.exe
+
+# Generated log files
+logs/*.log
+
+# Local repository data (restic index/pack files)
+repos/local/config
+repos/local/data/
+repos/local/index/
+repos/local/keys/
+repos/local/locks/
+repos/local/snapshots/
+
+# Windows
+Thumbs.db
+desktop.ini
