@@ -1,0 +1,91 @@
+{
+  "general": {
+    "restic_exe": "Restic\\restic.exe",
+    "log_dir": "logs",
+    "repos_dir": "repos",
+    "log_retention_days": 30
+  },
+
+  "sources": [
+    "C:\\Users\\%USERNAME%\\Documents",
+    "C:\\Users\\%USERNAME%\\Pictures",
+    "C:\\Users\\%USERNAME%\\Desktop"
+  ],
+
+  "exclusions": [
+    "*.tmp",
+    "*.log",
+    "~$*",
+    "Thumbs.db",
+    "desktop.ini",
+    "$RECYCLE.BIN",
+    "System Volume Information",
+    "pagefile.sys",
+    "hiberfil.sys",
+    "*.iso"
+  ],
+
+  "retention": {
+    "keep_last":    5,
+    "keep_daily":   7,
+    "keep_weekly":  4,
+    "keep_monthly": 6,
+    "keep_yearly":  1
+  },
+
+  "backends": {
+
+    "s3": {
+      "enabled": false,
+      "description": "Swiss Backup – Infomaniak S3",
+      "repository": "s3:https://s3.pub1.infomaniak.cloud/bucket-name",
+      "password":   "your-restic-repository-password",
+      "env": {
+        "AWS_ACCESS_KEY_ID":     "your-s3-access-key",
+        "AWS_SECRET_ACCESS_KEY": "your-s3-secret-key"
+      }
+    },
+
+    "swift": {
+      "enabled": false,
+      "description": "OpenStack Swift",
+      "repository": "swift:container-name:/restic",
+      "password":   "your-restic-repository-password",
+      "env": {
+        "OS_AUTH_URL":            "https://auth.cloud.ovh.net/v3",
+        "OS_USER_DOMAIN_NAME":    "Default",
+        "OS_PROJECT_DOMAIN_NAME": "Default",
+        "OS_TENANT_NAME":         "your-tenant",
+        "OS_USERNAME":            "your-username",
+        "OS_PASSWORD":            "your-password",
+        "OS_REGION_NAME":         "GRA"
+      }
+    },
+
+    "sftp": {
+      "enabled": false,
+      "description": "SFTP remote server",
+      "repository": "sftp:user@backup-server.example.com:/srv/restic-repos/myrepo",
+      "password":   "your-restic-repository-password",
+      "env": {}
+    },
+
+    "local": {
+      "enabled": true,
+      "description": "Local disk repository",
+      "repository": "repos\\local",
+      "password":   "your-restic-repository-password",
+      "env": {}
+    },
+
+    "usb": {
+      "enabled": true,
+      "description": "USB key / external drive",
+      "drive_label": "BACKUP_USB",
+      "repository_path": "ResticRepo",
+      "password":   "your-restic-repository-password",
+      "env": {}
+    }
+
+  }
+}
