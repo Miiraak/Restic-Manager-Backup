@@ -8,7 +8,7 @@ This is a known limitation of the current design. Take the following precautions
 
 ### Restrict File Permissions
 
-Limit access to `config.json` so only your user account can read it:
+Limit access to `config.json` so only your user account can read and write it:
 
 ```powershell
 icacls config.json /inheritance:r /grant:r "$($env:USERNAME):(R,W)"

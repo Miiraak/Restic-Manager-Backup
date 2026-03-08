@@ -377,7 +377,7 @@ Example – Backblaze B2 backend:
 See [SECURITY.md](SECURITY.md) for detailed security guidelines.
 
 Recommended measures:
-- **Restrict file permissions** (only your user account should be able to read it):
+- **Restrict file permissions** (only your user account should be able to read and write it):
   ```powershell
   icacls config.json /inheritance:r /grant:r "$($env:USERNAME):(R,W)"
   ```
