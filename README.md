@@ -30,7 +30,7 @@ Un seul script PowerShell, un fichier JSON de configuration, des sauvegardes inc
 | PowerShell | 5.1 (inclus dans Windows 10) |
 | restic | 0.16 ou plus récent |
 
-> **PowerShell 7+** est recommandé pour de meilleures performances JSON.
+> Le script est conçu et testé pour **Windows PowerShell 5.1** (inclus dans Windows 10/11). PowerShell 7+ est compatible grâce à l'utilisation de `Get-CimInstance` (remplaçant de `Get-WmiObject` supprimé dans PS7).
 
 ---
 
@@ -100,7 +100,6 @@ Restic-Manager-Backup\
 |-----|-------------|
 | `restic_exe` | Chemin relatif vers `restic.exe` |
 | `log_dir` | Dossier des logs |
-| `repos_dir` | Dossier des repositories locaux |
 | `log_retention_days` | Durée de conservation des logs (jours) |
 
 ### Section `sources`

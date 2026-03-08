@@ -2,7 +2,6 @@
   "general": {
     "restic_exe": "Restic\\restic.exe",
     "log_dir": "logs",
-    "repos_dir": "repos",
     "log_retention_days": 30
   },
 

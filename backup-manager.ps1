@@ -79,7 +79,7 @@ function Initialize-Log {
 function Load-Config {
     if (-not (Test-Path $ConfigFile)) {
         Write-Err "config.json not found at: $ConfigFile"
-        Write-Info "Copy config.json.example to config.json and fill in your credentials."
+        Write-Info "Create config.json in the script directory and fill in your settings (see the project documentation for details)."
         exit 1
     }
     try {
@@ -134,12 +134,12 @@ function Clear-BackendEnv {
 function Find-UsbDrive {
     param([string]$Label)
     try {
-        $drives = Get-WmiObject Win32_LogicalDisk -Filter "DriveType=2 OR DriveType=3" |
+        $drives = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType=2 OR DriveType=3" |
                   Where-Object { $_.VolumeName -eq $Label }
-        if ($drives) { return $drives[0].DeviceID }   # e.g. "E:"
+        if ($drives) { return @($drives)[0].DeviceID }   # e.g. "E:"
     }
     catch {
-        # WMI might not be available in all environments
+        # CIM might not be available in all environments
     }
     return $null
 }
@@ -150,7 +150,7 @@ function Detect-LocalTargets {
     #>
     $results = @()
     try {
-        Get-WmiObject Win32_LogicalDisk |
+        Get-CimInstance -ClassName Win32_LogicalDisk |
             Where-Object { $_.DriveType -in @(2, 3) } |
             ForEach-Object {
                 $results += [PSCustomObject]@{
@@ -163,7 +163,7 @@ function Detect-LocalTargets {
             }
     }
     catch {
-        Write-Info "WMI unavailable – skipping drive detection."
+        Write-Info "CIM unavailable – skipping drive detection."
     }
     return $results
 }
@@ -261,6 +261,15 @@ function Initialize-Repository {
 
         if (-not $backend.enabled) { Write-Info "[$name] disabled – skipped."; continue }
 
+        # Network check for remote backends
+        if ($name -in @("s3", "swift", "sftp")) {
+            if (-not (Test-NetworkAvailable)) {
+                Write-Err "[$name] No network available – skipped."
+                Write-Log "[$name] skipped (no network)" "WARN"
+                continue
+            }
+        }
+
         Write-Step "Initializing backend: $name ($($backend.description))"
         Write-Log "Initializing backend: $name"
 
@@ -268,9 +277,13 @@ function Initialize-Repository {
         if (-not $repo) { continue }
 
         Set-BackendEnv -Backend $backend
-
-        $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                                -Password $backend.password -Arguments @("init") -Silent
+        try {
+            $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                                    -Password $backend.password -Arguments @("init") -Silent
+        }
+        finally {
+            Clear-BackendEnv -Backend $backend
+        }
 
         if ($result.ExitCode -eq 0) {
             Write-OK "[$name] repository initialized successfully."
@@ -284,8 +297,6 @@ function Initialize-Repository {
             Write-Err "[$name] initialization failed (exit $($result.ExitCode))."
             Write-Log "[$name] initialization failed: $($result.Output)" "ERROR"
         }
-
-        Clear-BackendEnv -Backend $backend
     }
 }
 
@@ -334,13 +345,15 @@ function Start-Backup {
         Write-Log "Starting backup to [$name] repo: $repo"
 
         Set-BackendEnv -Backend $backend
+        try {
+            $args = @("backup") + $sources + $excludeArgs + @("--compression=auto", "--json")
 
-        $args = @("backup") + $sources + $excludeArgs + @("--compression=auto", "--json")
-
-        $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                                -Password $backend.password -Arguments $args -Silent
-
-        Clear-BackendEnv -Backend $backend
+            $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                                    -Password $backend.password -Arguments $args -Silent
+        }
+        finally {
+            Clear-BackendEnv -Backend $backend
+        }
 
         if ($result.ExitCode -eq 0) {
             Write-OK "[$name] backup completed."
@@ -388,15 +401,28 @@ function Show-Snapshots {
 
         if (-not $backend.enabled) { continue }
 
+        # Network check for remote backends
+        if ($name -in @("s3", "swift", "sftp")) {
+            if (-not (Test-NetworkAvailable)) {
+                Write-Err "[$name] No network available – skipped."
+                Write-Log "[$name] skipped (no network)" "WARN"
+                continue
+            }
+        }
+
         $repo = Resolve-Repository -BackendName $name -Backend $backend
         if (-not $repo) { continue }
 
         Write-Step "Snapshots for backend: $name"
 
         Set-BackendEnv -Backend $backend
-        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                      -Password $backend.password -Arguments @("snapshots")
-        Clear-BackendEnv -Backend $backend
+        try {
+            Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                          -Password $backend.password -Arguments @("snapshots")
+        }
+        finally {
+            Clear-BackendEnv -Backend $backend
+        }
     }
 }
 
@@ -420,8 +446,13 @@ function Restore-Backup {
         $map[$i] = $prop
         $i++
     }
-    $choice = Read-Host "Select backend number"
-    $selected = $map[[int]$choice]
+    $choiceInput = Read-Host "Select backend number"
+    [int]$choiceNumber = 0
+    if (-not [int]::TryParse($choiceInput, [ref]$choiceNumber)) {
+        Write-Err "Invalid selection. Please enter a valid number."
+        return
+    }
+    $selected = $map[$choiceNumber]
     if (-not $selected) { Write-Err "Invalid selection."; return }
 
     $name    = $selected.Name
@@ -431,27 +462,29 @@ function Restore-Backup {
     if (-not $repo) { return }
 
     Set-BackendEnv -Backend $backend
-    Write-Step "Listing snapshots for [$name]..."
-    Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                  -Password $backend.password -Arguments @("snapshots")
+    try {
+        Write-Step "Listing snapshots for [$name]..."
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                      -Password $backend.password -Arguments @("snapshots")
 
-    $snapshotId  = Read-Host "Enter snapshot ID to restore (or 'latest')"
-    $restorePath = Read-Host "Enter restore destination path"
+        $snapshotId  = Read-Host "Enter snapshot ID to restore (or 'latest')"
+        $restorePath = Read-Host "Enter restore destination path"
 
-    if ([string]::IsNullOrWhiteSpace($restorePath)) {
-        Write-Err "Restore path cannot be empty."
-        Clear-BackendEnv -Backend $backend
-        return
+        if ([string]::IsNullOrWhiteSpace($restorePath)) {
+            Write-Err "Restore path cannot be empty."
+            return
+        }
+
+        Write-Step "Restoring snapshot '$snapshotId' to '$restorePath'..."
+        Write-Log "Restoring [$name] snapshot $snapshotId to $restorePath"
+
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                      -Password $backend.password `
+                      -Arguments @("restore", $snapshotId, "--target", $restorePath)
     }
-
-    Write-Step "Restoring snapshot '$snapshotId' to '$restorePath'..."
-    Write-Log "Restoring [$name] snapshot $snapshotId to $restorePath"
-
-    Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                  -Password $backend.password `
-                  -Arguments @("restore", $snapshotId, "--target", $restorePath)
-
-    Clear-BackendEnv -Backend $backend
+    finally {
+        Clear-BackendEnv -Backend $backend
+    }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -469,6 +502,15 @@ function Test-Repository {
 
         if (-not $backend.enabled) { continue }
 
+        # Network check for remote backends
+        if ($name -in @("s3", "swift", "sftp")) {
+            if (-not (Test-NetworkAvailable)) {
+                Write-Err "[$name] No network available – skipped."
+                Write-Log "[$name] skipped (no network)" "WARN"
+                continue
+            }
+        }
+
         $repo = Resolve-Repository -BackendName $name -Backend $backend
         if (-not $repo) { continue }
 
@@ -476,9 +518,13 @@ function Test-Repository {
         Write-Log "Checking [$name]"
 
         Set-BackendEnv -Backend $backend
-        $exit = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                              -Password $backend.password -Arguments @("check")
-        Clear-BackendEnv -Backend $backend
+        try {
+            $exit = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                                  -Password $backend.password -Arguments @("check")
+        }
+        finally {
+            Clear-BackendEnv -Backend $backend
+        }
 
         if ($exit -eq 0) {
             Write-OK "[$name] repository is consistent."
@@ -515,6 +561,15 @@ function Invoke-Prune {
 
         if (-not $backend.enabled) { continue }
 
+        # Network check for remote backends
+        if ($name -in @("s3", "swift", "sftp")) {
+            if (-not (Test-NetworkAvailable)) {
+                Write-Err "[$name] No network available – skipped."
+                Write-Log "[$name] skipped (no network)" "WARN"
+                continue
+            }
+        }
+
         $repo = Resolve-Repository -BackendName $name -Backend $backend
         if (-not $repo) { continue }
 
@@ -522,10 +577,14 @@ function Invoke-Prune {
         Write-Log "Pruning [$name]"
 
         Set-BackendEnv -Backend $backend
-        $exit = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                              -Password $backend.password `
-                              -Arguments (@("forget", "--prune") + $retArgs)
-        Clear-BackendEnv -Backend $backend
+        try {
+            $exit = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                                  -Password $backend.password `
+                                  -Arguments (@("forget", "--prune") + $retArgs)
+        }
+        finally {
+            Clear-BackendEnv -Backend $backend
+        }
 
         if ($exit -eq 0) {
             Write-OK "[$name] prune completed."
@@ -553,15 +612,28 @@ function Show-Stats {
 
         if (-not $backend.enabled) { continue }
 
+        # Network check for remote backends
+        if ($name -in @("s3", "swift", "sftp")) {
+            if (-not (Test-NetworkAvailable)) {
+                Write-Err "[$name] No network available – skipped."
+                Write-Log "[$name] skipped (no network)" "WARN"
+                continue
+            }
+        }
+
         $repo = Resolve-Repository -BackendName $name -Backend $backend
         if (-not $repo) { continue }
 
         Write-Step "Stats for backend: $name"
 
         Set-BackendEnv -Backend $backend
-        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                      -Password $backend.password -Arguments @("stats")
-        Clear-BackendEnv -Backend $backend
+        try {
+            Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                          -Password $backend.password -Arguments @("stats")
+        }
+        finally {
+            Clear-BackendEnv -Backend $backend
+        }
     }
 }
 
@@ -615,7 +687,14 @@ function Remove-OldLogs {
     $cutoff = (Get-Date).AddDays(-$RetentionDays)
     Get-ChildItem -Path $LogDir -Filter "*.log" |
         Where-Object { $_.LastWriteTime -lt $cutoff } |
-        Remove-Item -Force
+        ForEach-Object {
+            try {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+            }
+            catch {
+                Write-Warning ("Failed to remove old log file '{0}': {1}" -f $_.FullName, $_.Exception.Message)
+            }
+        }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
