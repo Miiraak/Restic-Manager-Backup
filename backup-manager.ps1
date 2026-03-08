@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-    Restic Manager Backup – Interactive CLI backup manager for Windows 64-bit.
+    Restic Manager Backup - Interactive CLI backup manager for Windows 64-bit.
 
 .DESCRIPTION
     Multi-backend backup tool built on top of restic.
@@ -17,15 +17,15 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Paths
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $ScriptRoot  = $PSScriptRoot
 $ConfigFile  = Join-Path $ScriptRoot "config.json"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper – colored output
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Helper - colored output
+# -----------------------------------------------------------------------------
 function Write-Header {
     param([string]$Text)
     Write-Host ""
@@ -54,9 +54,9 @@ function Write-Info {
     Write-Host "[i] $Text" -ForegroundColor Gray
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Logging
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $LogFile = $null   # set once config is loaded
 
 function Write-Log {
@@ -73,9 +73,9 @@ function Initialize-Log {
     Write-Log "Session started"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Config loading
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Load-Config {
     if (-not (Test-Path $ConfigFile)) {
         Write-Err "config.json not found at: $ConfigFile"
@@ -93,9 +93,9 @@ function Load-Config {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Restic binary helper
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Get-ResticExe {
     param($Config)
     $exe = Join-Path $ScriptRoot $Config.general.restic_exe
@@ -107,9 +107,9 @@ function Get-ResticExe {
     return $exe
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Environment variable helpers for backends
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Set-BackendEnv {
     param([PSCustomObject]$Backend)
     if ($Backend.env) {
@@ -128,9 +128,9 @@ function Clear-BackendEnv {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # USB / drive detection
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Find-UsbDrive {
     param([string]$Label)
     try {
@@ -163,14 +163,14 @@ function Detect-LocalTargets {
             }
     }
     catch {
-        Write-Info "CIM unavailable – skipping drive detection."
+        Write-Info "CIM unavailable - skipping drive detection."
     }
     return $results
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Network connectivity check
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Test-NetworkAvailable {
     try {
         return [System.Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable()
@@ -180,9 +180,9 @@ function Test-NetworkAvailable {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Resolve repository path for a backend
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Resolve-Repository {
     param([string]$BackendName, $Backend)
 
@@ -210,9 +210,9 @@ function Resolve-Repository {
     return $Backend.repository
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Restic command executor
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Invoke-Restic {
     param(
         [string]   $ResticExe,
@@ -246,9 +246,9 @@ function Invoke-Restic {
     return [PSCustomObject]@{ ExitCode = $exit; Output = $output }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 1. Initialize repository
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Initialize-Repository {
     param($Config, [string]$ResticExe)
 
@@ -259,12 +259,12 @@ function Initialize-Repository {
         $name    = $prop.Name
         $backend = $prop.Value
 
-        if (-not $backend.enabled) { Write-Info "[$name] disabled – skipped."; continue }
+        if (-not $backend.enabled) { Write-Info "[$name] disabled - skipped."; continue }
 
         # Network check for remote backends
         if ($name -in @("s3", "swift", "sftp")) {
             if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available – skipped."
+                Write-Err "[$name] No network available - skipped."
                 Write-Log "[$name] skipped (no network)" "WARN"
                 continue
             }
@@ -300,9 +300,9 @@ function Initialize-Repository {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 2. Run backup
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Start-Backup {
     param($Config, [string]$ResticExe)
 
@@ -327,12 +327,12 @@ function Start-Backup {
         $name    = $prop.Name
         $backend = $prop.Value
 
-        if (-not $backend.enabled) { Write-Info "[$name] disabled – skipped."; continue }
+        if (-not $backend.enabled) { Write-Info "[$name] disabled - skipped."; continue }
 
         # Network check for remote backends
         if ($name -in @("s3", "swift", "sftp")) {
             if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available – skipped."
+                Write-Err "[$name] No network available - skipped."
                 Write-Log "[$name] skipped (no network)" "WARN"
                 continue
             }
@@ -386,9 +386,9 @@ function Start-Backup {
     Write-Log ("Total backup duration: {0:mm\:ss}" -f $duration)
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 3. List snapshots
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Show-Snapshots {
     param($Config, [string]$ResticExe)
 
@@ -404,7 +404,7 @@ function Show-Snapshots {
         # Network check for remote backends
         if ($name -in @("s3", "swift", "sftp")) {
             if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available – skipped."
+                Write-Err "[$name] No network available - skipped."
                 Write-Log "[$name] skipped (no network)" "WARN"
                 continue
             }
@@ -426,9 +426,9 @@ function Show-Snapshots {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 4. Restore backup
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Restore-Backup {
     param($Config, [string]$ResticExe)
 
@@ -442,7 +442,7 @@ function Restore-Backup {
     $i = 1
     $map = @{}
     foreach ($prop in $enabledBackends) {
-        Write-Host "  [$i] $($prop.Name) – $($prop.Value.description)" -ForegroundColor White
+        Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
         $map[$i] = $prop
         $i++
     }
@@ -487,9 +487,9 @@ function Restore-Backup {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 5. Verify / check repository
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Test-Repository {
     param($Config, [string]$ResticExe)
 
@@ -505,7 +505,7 @@ function Test-Repository {
         # Network check for remote backends
         if ($name -in @("s3", "swift", "sftp")) {
             if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available – skipped."
+                Write-Err "[$name] No network available - skipped."
                 Write-Log "[$name] skipped (no network)" "WARN"
                 continue
             }
@@ -537,9 +537,9 @@ function Test-Repository {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 6. Prune repository
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Invoke-Prune {
     param($Config, [string]$ResticExe)
 
@@ -564,7 +564,7 @@ function Invoke-Prune {
         # Network check for remote backends
         if ($name -in @("s3", "swift", "sftp")) {
             if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available – skipped."
+                Write-Err "[$name] No network available - skipped."
                 Write-Log "[$name] skipped (no network)" "WARN"
                 continue
             }
@@ -597,9 +597,9 @@ function Invoke-Prune {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 7. Repository statistics
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Show-Stats {
     param($Config, [string]$ResticExe)
 
@@ -615,7 +615,7 @@ function Show-Stats {
         # Network check for remote backends
         if ($name -in @("s3", "swift", "sftp")) {
             if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available – skipped."
+                Write-Err "[$name] No network available - skipped."
                 Write-Log "[$name] skipped (no network)" "WARN"
                 continue
             }
@@ -637,9 +637,9 @@ function Show-Stats {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # 8. Detect available targets
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Show-Targets {
     param($Config)
 
@@ -678,9 +678,9 @@ function Show-Targets {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Purge old log files
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Remove-OldLogs {
     param([string]$LogDir, [int]$RetentionDays)
     if (-not (Test-Path $LogDir)) { return }
@@ -697,13 +697,13 @@ function Remove-OldLogs {
         }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Main menu
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Show-Menu {
     Write-Host ""
     Write-Host ("=" * 60) -ForegroundColor Cyan
-    Write-Host "   Restic Manager Backup – Multi-backend CLI" -ForegroundColor Cyan
+    Write-Host "   Restic Manager Backup - Multi-backend CLI" -ForegroundColor Cyan
     Write-Host ("=" * 60) -ForegroundColor Cyan
     Write-Host "  1. Initialize repository"          -ForegroundColor White
     Write-Host "  2. Run backup (all enabled backends)" -ForegroundColor White
@@ -717,9 +717,9 @@ function Show-Menu {
     Write-Host ("=" * 60) -ForegroundColor Cyan
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Entry point
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $Config    = Load-Config
 $ResticExe = Get-ResticExe -Config $Config
 $LogDir    = Join-Path $ScriptRoot $Config.general.log_dir
