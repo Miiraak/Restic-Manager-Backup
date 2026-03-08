@@ -1,5 +1,400 @@
 # Restic Manager Backup
 
+> **100% CLI · Windows 64-bit · Multi-backend · Lightweight & Extensible**
+
+Interactive backup manager built on [restic](https://restic.net/), designed for Windows 64-bit.  
+A single PowerShell script, a JSON configuration file, and incremental deduplicated backups to multiple destinations simultaneously.
+
+🇫🇷 *[Version française ci-dessous](#version-française)*
+
+---
+
+## Table of Contents
+
+1. [Prerequisites](#prerequisites)
+2. [Installation](#installation)
+3. [File Structure](#file-structure)
+4. [Configuration (`config.json`)](#configuration-configjson)
+5. [CLI Menu Usage](#cli-menu-usage)
+6. [Multi-backend Workflow: Cloud + USB](#multi-backend-workflow-cloud--usb)
+7. [Retention and Pruning](#retention-and-pruning)
+8. [Logs](#logs)
+9. [Adding a New Backend](#adding-a-new-backend)
+10. [Troubleshooting](#troubleshooting)
+11. [Security](#security)
+12. [License](#license)
+
+---
+
+## Prerequisites
+
+| Component  | Minimum Version                  |
+|------------|----------------------------------|
+| Windows    | 10 / Server 2016 (64-bit)       |
+| PowerShell | 5.1 (included in Windows 10)    |
+| restic     | 0.16 or later                   |
+
+> The script is designed and tested for **Windows PowerShell 5.1** (built-in to Windows 10/11). PowerShell 7+ is compatible thanks to the use of `Get-CimInstance` (replacement for `Get-WmiObject` removed in PS7).
+
+---
+
+## Installation
+
+### 1. Clone or download the project
+
+```
+git clone https://github.com/Miiraak/Restic-Manager-Backup.git
+cd Restic-Manager-Backup
+```
+
+### 2. Download restic
+
+1. Go to <https://github.com/restic/restic/releases>
+2. Download `restic_X.Y.Z_windows_amd64.zip`
+3. Extract and rename the binary to **`restic.exe`**
+4. Copy `restic.exe` into the `Restic\` folder
+
+### 3. Configure `config.json`
+
+Copy and customize the provided file:
+
+```powershell
+Copy-Item config.json config.json.bak   # optional backup
+notepad config.json                      # or VS Code, etc.
+```
+
+Fill in the backend sections you want to enable (see [Configuration](#configuration-configjson)).
+
+### 4. Run the script
+
+```powershell
+# From PowerShell (allow execution if needed)
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+.\backup-manager.ps1
+```
+
+---
+
+## File Structure
+
+```
+Restic-Manager-Backup\
+│
+├── backup-manager.ps1    # Main script – interactive menu
+├── config.json           # Full configuration (backends, sources, retention)
+├── .gitignore
+├── LICENSE               # MIT License
+├── CONTRIBUTING.md       # Contribution guidelines
+├── CHANGELOG.md          # Version history
+├── SECURITY.md           # Security policy and best practices
+│
+├── Restic\
+│   └── restic.exe        # Restic binary (download separately)
+│
+├── logs\                 # Timestamped logs generated automatically
+│   └── backup_YYYYMMDD_HHMMSS.log
+│
+└── repos\
+    └── local\            # Local restic repository (internal disk)
+```
+
+---
+
+## Configuration (`config.json`)
+
+### `general` Section
+
+| Key                  | Description                         |
+|----------------------|-------------------------------------|
+| `restic_exe`         | Relative path to `restic.exe`       |
+| `log_dir`            | Log directory                       |
+| `log_retention_days` | Log retention duration (days)       |
+
+### `sources` Section
+
+List of folders to back up. Environment variables like `%USERNAME%` are automatically expanded.
+
+```json
+"sources": [
+  "C:\\Users\\%USERNAME%\\Documents",
+  "C:\\Users\\%USERNAME%\\Pictures",
+  "D:\\Projects"
+]
+```
+
+### `exclusions` Section
+
+File/folder patterns to exclude (restic syntax):
+
+```json
+"exclusions": ["*.tmp", "*.log", "~$*", "Thumbs.db", "node_modules"]
+```
+
+### `retention` Section
+
+Retention policy applied during pruning:
+
+```json
+"retention": {
+  "keep_last":    5,
+  "keep_daily":   7,
+  "keep_weekly":  4,
+  "keep_monthly": 6,
+  "keep_yearly":  1
+}
+```
+
+### `backends` Section
+
+Each backend has these common fields:
+
+| Field         | Description                                   |
+|---------------|-----------------------------------------------|
+| `enabled`     | `true` / `false` – enable or disable backend  |
+| `description` | Text displayed in the menu                    |
+| `password`    | Restic repository password                    |
+| `env`         | Backend-specific environment variables        |
+
+#### S3 Example (Swiss Backup Infomaniak)
+
+```json
+"s3": {
+  "enabled": true,
+  "description": "Swiss Backup – Infomaniak S3",
+  "repository": "s3:https://s3.pub1.infomaniak.cloud/my-bucket",
+  "password": "your-restic-password",
+  "env": {
+    "AWS_ACCESS_KEY_ID":     "ACCESS_KEY",
+    "AWS_SECRET_ACCESS_KEY": "SECRET_KEY"
+  }
+}
+```
+
+#### Swift Example (OpenStack / OVH)
+
+```json
+"swift": {
+  "enabled": true,
+  "repository": "swift:my-container:/restic",
+  "password": "your-restic-password",
+  "env": {
+    "OS_AUTH_URL":   "https://auth.cloud.ovh.net/v3",
+    "OS_USERNAME":   "user",
+    "OS_PASSWORD":   "pass",
+    "OS_TENANT_NAME":"tenant",
+    "OS_REGION_NAME":"GRA"
+  }
+}
+```
+
+#### SFTP Example
+
+```json
+"sftp": {
+  "enabled": true,
+  "repository": "sftp:user@backup-server.example.com:/srv/restic/repo",
+  "password": "your-restic-password",
+  "env": {}
+}
+```
+
+> For SFTP, the SSH key must be configured without a passphrase (or with `ssh-agent`).
+
+#### USB Backend
+
+The script automatically detects the USB drive by its **volume label**.
+
+```json
+"usb": {
+  "enabled": true,
+  "drive_label": "BACKUP_USB",
+  "repository_path": "ResticRepo",
+  "password": "your-restic-password",
+  "env": {}
+}
+```
+
+Format the USB drive with the label `BACKUP_USB` (NTFS or exFAT).  
+The repository will be created at `E:\ResticRepo\` (drive letter assigned automatically).
+
+---
+
+## CLI Menu Usage
+
+At startup, the following menu is displayed:
+
+```
+============================================================
+   Restic Manager Backup – Multi-backend CLI
+============================================================
+  1. Initialize repository
+  2. Run backup (all enabled backends)
+  3. List snapshots
+  4. Restore backup
+  5. Verify repository
+  6. Prune repository
+  7. Repository statistics
+  8. Detect available targets
+  0. Quit
+============================================================
+```
+
+### Option 1 – Initialize repository
+
+Creates a new restic repository on each enabled backend.  
+If the repository already exists, this operation is silently skipped.  
+**Run once per backend.**
+
+### Option 2 – Run backup
+
+Runs an incremental, deduplicated backup to **all enabled backends** sequentially.
+- Network backends (S3, Swift, SFTP) are skipped if no network is available.
+- Automatic compression is enabled (`--compression=auto`).
+- A summary is displayed after each backend (new/changed files, data added, duration).
+
+### Option 3 – List snapshots
+
+Displays a list of all available snapshots in each enabled backend.
+
+### Option 4 – Restore backup
+
+1. Select the source backend.
+2. Choose the snapshot ID (or `latest`).
+3. Enter the destination directory.
+
+### Option 5 – Verify repository
+
+Runs `restic check` to verify data integrity in each backend.
+
+### Option 6 – Prune (cleanup)
+
+Applies the retention policy defined in `config.json` and removes old unused snapshots/packs.
+
+### Option 7 – Statistics
+
+Displays storage statistics (total size, deduplication) for each backend.
+
+### Option 8 – Detect available targets
+
+Lists:
+- All local and removable drives (letter, label, type, free/total space)
+- Whether the configured USB drive is present
+- Network availability
+
+---
+
+## Multi-backend Workflow: Cloud + USB
+
+Here is a recommended workflow:
+
+```
+1. [First time only] Initialize repositories (option 1)
+2. Connect the USB drive
+3. Run backup (option 2)
+   ├── Backend "local"  → C:\...\repos\local\
+   ├── Backend "usb"    → E:\ResticRepo\  (USB drive)
+   └── Backend "s3"     → s3:https://...  (cloud, if network available)
+4. Verify repositories (option 5) – periodically
+5. Prune (option 6) – weekly or monthly
+```
+
+---
+
+## Retention and Pruning
+
+The **Prune (option 6)** command runs `restic forget --prune` with the following parameters (configurable in `config.json`):
+
+| Parameter      | Default | Meaning                                        |
+|----------------|---------|------------------------------------------------|
+| `keep_last`    | 5       | Keep the last 5 snapshots                      |
+| `keep_daily`   | 7       | Keep 1 snapshot per day (last 7 days)          |
+| `keep_weekly`  | 4       | Keep 1 snapshot per week (last 4 weeks)        |
+| `keep_monthly` | 6       | Keep 1 snapshot per month (last 6 months)      |
+| `keep_yearly`  | 1       | Keep 1 snapshot per year                       |
+
+---
+
+## Logs
+
+A new log file is created for each session:
+
+```
+logs\backup_20240315_143022.log
+```
+
+Contents:
+- Timestamp and level (`INFO`, `WARN`, `ERROR`)
+- Backend, repository path
+- Backup summary (files, data, duration)
+- Any errors encountered
+
+Logs older than `log_retention_days` days are automatically deleted at startup.
+
+---
+
+## Adding a New Backend
+
+1. **Add an entry in `config.json`** under `backends` with the fields `enabled`, `description`, `repository`, `password`, `env`.
+
+2. **If the backend requires custom resolution logic** (like USB drive detection), modify the `Resolve-Repository` function in `backup-manager.ps1`.
+
+3. **Environment variables**: restic natively supports variables for major providers (AWS, Azure, GCS, OpenStack…). Enter them in the backend's `env` field.
+
+Example – Backblaze B2 backend:
+
+```json
+"b2": {
+  "enabled": false,
+  "description": "Backblaze B2",
+  "repository": "b2:my-bucket:/restic",
+  "password": "your-restic-password",
+  "env": {
+    "B2_ACCOUNT_ID":  "your-account-id",
+    "B2_ACCOUNT_KEY": "your-application-key"
+  }
+}
+```
+
+---
+
+## Troubleshooting
+
+| Problem                        | Solution                                                                 |
+|--------------------------------|--------------------------------------------------------------------------|
+| `restic.exe not found`         | Download restic and place it in `Restic\restic.exe`                      |
+| `config.json not found`        | Ensure `config.json` is in the same folder as the script                 |
+| PowerShell execution error     | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`                |
+| USB backend not detected       | Verify the volume label matches `drive_label` exactly                    |
+| SFTP error                     | Configure SSH key without passphrase or start `ssh-agent`                |
+| Repo already initialized       | Normal – the script detects and silently skips                           |
+
+---
+
+## Security
+
+> ⚠️ **Passwords and credentials are stored in plain text in `config.json`.**
+
+See [SECURITY.md](SECURITY.md) for detailed security guidelines.
+
+Recommended measures:
+- **Restrict file permissions** (only your user account should be able to read it):
+  ```powershell
+  icacls config.json /inheritance:r /grant:r "$($env:USERNAME):(R,W)"
+  ```
+- **Never commit `config.json`** with real credentials to a public repository. The provided file contains only placeholder values.
+- For enhanced security, consider storing passwords in the **Windows Credential Manager** and reading them dynamically via `Get-StoredCredential` (module `CredentialManager`).
+
+---
+
+## License
+
+[MIT](LICENSE) – Free to use, modify, and distribute.
+
+---
+---
+
+# Version française
+
 > **100 % CLI · Windows 64-bit · Multi-backend · Léger et extensible**
 
 Gestionnaire de sauvegardes interactif basé sur [restic](https://restic.net/), conçu pour Windows 64 bits.  
@@ -10,13 +405,13 @@ Un seul script PowerShell, un fichier JSON de configuration, des sauvegardes inc
 ## Sommaire
 
 1. [Prérequis](#prérequis)
-2. [Installation](#installation)
+2. [Installation (FR)](#installation-fr)
 3. [Structure des fichiers](#structure-des-fichiers)
-4. [Configuration (`config.json`)](#configuration-configjson)
+4. [Configuration (`config.json`) (FR)](#configuration-configjson-fr)
 5. [Utilisation du menu CLI](#utilisation-du-menu-cli)
 6. [Workflow multi-backend : cloud + USB](#workflow-multi-backend--cloud--usb)
 7. [Rétention et pruning](#rétention-et-pruning)
-8. [Logs](#logs)
+8. [Logs (FR)](#logs-fr)
 9. [Ajouter un nouveau backend](#ajouter-un-nouveau-backend)
 10. [Dépannage](#dépannage)
 
@@ -34,7 +429,7 @@ Un seul script PowerShell, un fichier JSON de configuration, des sauvegardes inc
 
 ---
 
-## Installation
+## Installation (FR)
 
 ### 1. Cloner ou télécharger le projet
 
@@ -59,7 +454,7 @@ Copy-Item config.json config.json.bak   # sauvegarde optionnelle
 notepad config.json                      # ou VS Code, etc.
 ```
 
-Remplir les sections des backends que vous souhaitez activer (voir [Configuration](#configuration-configjson)).
+Remplir les sections des backends que vous souhaitez activer (voir [Configuration](#configuration-configjson-fr)).
 
 ### 4. Lancer le script
 
@@ -79,6 +474,10 @@ Restic-Manager-Backup\
 ├── backup-manager.ps1    # Script principal – menu interactif
 ├── config.json           # Configuration complète (backends, sources, rétention)
 ├── .gitignore
+├── LICENSE               # Licence MIT
+├── CONTRIBUTING.md       # Guide de contribution
+├── CHANGELOG.md          # Historique des versions
+├── SECURITY.md           # Politique de sécurité
 │
 ├── Restic\
 │   └── restic.exe        # Binaire restic (à télécharger)
@@ -92,7 +491,7 @@ Restic-Manager-Backup\
 
 ---
 
-## Configuration (`config.json`)
+## Configuration (`config.json`) (FR)
 
 ### Section `general`
 
@@ -306,7 +705,7 @@ La commande **Prune (option 6)** exécute `restic forget --prune` avec les param
 
 ---
 
-## Logs
+## Logs (FR)
 
 Un nouveau fichier log est créé à chaque session :
 
@@ -359,24 +758,3 @@ Exemple – backend Backblaze B2 :
 | Backend USB non détecté | Vérifier que le label de volume correspond exactement à `drive_label` |
 | Erreur SFTP | Configurer la clé SSH sans phrase de passe ou démarrer `ssh-agent` |
 | Repo déjà initialisé | Normal – le script détecte et ignore cette situation |
-
----
-
-## Sécurité
-
-> ⚠️ **Les mots de passe et credentials sont stockés en clair dans `config.json`.**
-
-Mesures de protection recommandées :
-
-- **Restreindre les permissions du fichier** (seul votre compte utilisateur doit pouvoir le lire) :
-  ```powershell
-  icacls config.json /inheritance:r /grant:r "$($env:USERNAME):(R,W)"
-  ```
-- **Ne jamais versionner `config.json`** avec vos vraies credentials dans un dépôt public. Le fichier fourni ne contient que des valeurs d'exemple.
-- Pour une sécurité renforcée, envisager de stocker les mots de passe dans le **Windows Credential Manager** et de les lire dynamiquement dans le script via `Get-StoredCredential` (module `CredentialManager`).
-
----
-
-## Licence
-
-MIT – Libre d'utilisation, de modification et de distribution.
