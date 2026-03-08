@@ -346,10 +346,10 @@ function Start-Backup {
 
         Set-BackendEnv -Backend $backend
         try {
-            $args = @("backup") + $sources + $excludeArgs + @("--compression=auto", "--json")
+            $backupArgs = @("backup") + $sources + $excludeArgs + @("--compression=auto", "--json")
 
             $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                                    -Password $backend.password -Arguments $args -Silent
+                                    -Password $backend.password -Arguments $backupArgs -Silent
         }
         finally {
             Clear-BackendEnv -Backend $backend

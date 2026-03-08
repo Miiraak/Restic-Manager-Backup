@@ -15,3 +15,16 @@ repos/local/snapshots/
 # Windows
 Thumbs.db
 desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# PowerShell
+*.psm1.bak
+*.ps1.bak
