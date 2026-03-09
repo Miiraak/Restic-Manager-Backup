@@ -443,8 +443,9 @@ function Invoke-ResticWithProgress {
 
                     # Current file being processed (truncate long paths for display)
                     $maxFileDisplayLen = 60
-                    if ($json.current_files -and @($json.current_files).Count -gt 0 -and $null -ne @($json.current_files)[0]) {
-                        $lastFile = $json.current_files[0]
+                    $currentFiles = @($json.current_files)
+                    if ($currentFiles -and $currentFiles.Count -gt 0 -and $null -ne $currentFiles[0]) {
+                        $lastFile = $currentFiles[0]
                         if ($lastFile.Length -gt $maxFileDisplayLen) {
                             $lastFile = "..." + $lastFile.Substring($lastFile.Length - ($maxFileDisplayLen - 3))
                         }
