@@ -471,13 +471,20 @@ function Invoke-ResticWithProgress {
 
         $process.WaitForExit()
         $exitCode = $process.ExitCode
-
-        # Collect any stderr output that was captured asynchronously
-        Unregister-Event -SourceIdentifier $stderrEvent.Name -ErrorAction SilentlyContinue
-        $stderrText = $stderrBuilder.ToString()
-        if ($stderrText) { $allOutput += $stderrText }
     }
     finally {
+        # Clean up stderr event handler and background job
+        if ($stderrEvent) {
+            Unregister-Event -SourceIdentifier $stderrEvent.Name -Force -ErrorAction SilentlyContinue
+            Remove-Job -Name $stderrEvent.Name -Force -ErrorAction SilentlyContinue
+        }
+
+        # Collect any stderr output that was captured asynchronously
+        if ($stderrBuilder -and $stderrBuilder.Length -gt 0) {
+            $stderrText = $stderrBuilder.ToString()
+            if ($stderrText) { $allOutput += $stderrText }
+        }
+
         Remove-Item Env:\RESTIC_REPOSITORY -ErrorAction SilentlyContinue
         Remove-Item Env:\RESTIC_PASSWORD   -ErrorAction SilentlyContinue
         Write-Progress -Activity "Backup to $BackendName" -Completed
