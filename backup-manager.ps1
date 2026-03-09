@@ -377,8 +377,11 @@ function Invoke-ResticWithProgress {
         [string]   $Repository,
         [string]   $Password,
         [string[]] $Arguments,
-        [string]   $BackendName
+        [string]   $BackendName,
+        [string]   $ActivityName = ""
     )
+
+    if (-not $ActivityName) { $ActivityName = "Backup to $BackendName" }
 
     $env:RESTIC_REPOSITORY = $Repository
     $env:RESTIC_PASSWORD   = $Password
@@ -464,7 +467,7 @@ function Invoke-ResticWithProgress {
 
                     $statusText = "[$BackendName] Files: $filesDone/$totalFiles | ${bytesDoneMB} MiB | $lastFile"
 
-                    Write-Progress -Activity "Backup to $BackendName" `
+                    Write-Progress -Activity $ActivityName `
                                    -Status $statusText `
                                    -PercentComplete ([math]::Min(100, [math]::Max(0, $pctDone)))
                 }
@@ -502,7 +505,7 @@ function Invoke-ResticWithProgress {
 
         Remove-Item Env:\RESTIC_REPOSITORY -ErrorAction SilentlyContinue
         Remove-Item Env:\RESTIC_PASSWORD   -ErrorAction SilentlyContinue
-        Write-Progress -Activity "Backup to $BackendName" -Completed
+        Write-Progress -Activity $ActivityName -Completed
     }
 
     return [PSCustomObject]@{
@@ -1278,14 +1281,17 @@ function Start-DryRunBackup {
     if (-not $repo) { return }
 
     Write-Step "Dry-run backup using backend: $name"
-    Write-Log "Dry-run backup [$name]"
+    Write-Log "Dry-run backup [$name] repo: $repo"
 
     $backupArgs = @("backup", "--dry-run") + $sources + $excludeArgs + @($compressionArg, "--json") + $ofsArg + $tagArgs
 
     Set-BackendEnv -Backend $backend
     try {
-        $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                                -Password $backend.password -Arguments $backupArgs -Silent
+        $result = Invoke-ResticWithProgress -ResticExe $ResticExe -Repository $repo `
+                                            -Password $backend.password `
+                                            -Arguments $backupArgs `
+                                            -BackendName $name `
+                                            -ActivityName "Dry-run to $name"
     }
     finally {
         Clear-BackendEnv -Backend $backend
@@ -1294,28 +1300,34 @@ function Start-DryRunBackup {
     if ($result.ExitCode -eq 0) {
         Write-OK "Dry-run completed."
 
-        # Parse summary
-        foreach ($line in $result.Output) {
-            $lineStr = $line.ToString()
-            if ($lineStr -match '"message_type"\s*:\s*"summary"') {
-                try {
-                    $summary = $lineStr | ConvertFrom-Json
-                    Write-Host ""
-                    Write-Info "Dry-run summary (no data was written):"
-                    Write-Detail ("  Files new      : {0}" -f $summary.files_new)
-                    Write-Detail ("  Files changed  : {0}" -f $summary.files_changed)
-                    Write-Detail ("  Files unchanged: {0}" -f $summary.files_unmodified)
-                    Write-Detail ("  Total files    : {0}" -f $summary.total_files_processed)
-                    Write-Detail ("  Total bytes    : {0:F2} MiB" -f ($summary.total_bytes_processed / 1MB))
+        $summary = $result.Summary
+        if (-not $summary -and $result.Output) {
+            foreach ($line in $result.Output) {
+                if ($line -match '"message_type"\s*:\s*"summary"') {
+                    try { $summary = $line | ConvertFrom-Json } catch {}
                 }
-                catch {}
             }
+        }
+
+        if ($summary) {
+            Write-Host ""
+            Write-Info "Dry-run summary (no data was written):"
+            Write-Detail ("  Files new      : {0}" -f $summary.files_new)
+            Write-Detail ("  Files changed  : {0}" -f $summary.files_changed)
+            Write-Detail ("  Files unchanged: {0}" -f $summary.files_unmodified)
+            Write-Detail ("  Total files    : {0}" -f $summary.total_files_processed)
+            Write-Detail ("  Total bytes    : {0:F2} MiB" -f ($summary.total_bytes_processed / 1MB))
+
+            Write-Log ("[$name] dry-run files_new={0} files_changed={1} files_unmodified={2} total_files={3} total_bytes={4}B" -f `
+                $summary.files_new, $summary.files_changed, $summary.files_unmodified,
+                $summary.total_files_processed, $summary.total_bytes_processed) "INFO"
         }
     }
     else {
         Write-Err "Dry-run failed (exit $($result.ExitCode))."
         $lastLine = if ($result.Output) { ($result.Output | Select-Object -Last 1).ToString() } else { "(no output)" }
         Write-Err $lastLine
+        Write-Log "[$name] dry-run failed (exit $($result.ExitCode)): $lastLine" "ERROR"
     }
 }
 
