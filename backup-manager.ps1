@@ -409,7 +409,7 @@ function Invoke-ResticWithProgress {
                     }
 
                     # Current file being processed
-                    if ($json.current_files -and $json.current_files.Count -gt 0) {
+                    if ($json.current_files -and $json.current_files.Count -gt 0 -and $null -ne $json.current_files[0]) {
                         $lastFile = $json.current_files[0]
                         if ($lastFile.Length -gt 60) {
                             $lastFile = "..." + $lastFile.Substring($lastFile.Length - 57)
@@ -675,7 +675,13 @@ function Start-Backup {
                 # Parse summary from output
                 $summaryLine = ($result.Output | Select-String '"message_type":"summary"').Line
                 if ($summaryLine) {
-                    try { $result | Add-Member -NotePropertyName Summary -NotePropertyValue ($summaryLine | ConvertFrom-Json) -ErrorAction SilentlyContinue } catch {}
+                    try {
+                        $parsedSummary = $summaryLine | ConvertFrom-Json
+                        $result | Add-Member -NotePropertyName Summary -NotePropertyValue $parsedSummary
+                    }
+                    catch {
+                        Write-Log "Failed to parse backup summary JSON: $_" "WARN"
+                    }
                 }
             }
         }
@@ -724,7 +730,11 @@ function Start-Backup {
                     FilesChg   = $summary.files_changed
                     DataAdded  = "{0:F2} MiB" -f ($summary.data_added / 1MB)
                     Duration   = "{0:F1} s" -f $summary.total_duration
-                    SnapshotID = if ($summary.snapshot_id) { $summary.snapshot_id.Substring(0, [math]::Min(8, $summary.snapshot_id.Length)) } else { "N/A" }
+                    SnapshotID = $(
+                        if ($summary.snapshot_id) {
+                            $summary.snapshot_id.Substring(0, [math]::Min(8, $summary.snapshot_id.Length))
+                        } else { "N/A" }
+                    )
                 }
             }
             else {
