@@ -169,31 +169,56 @@ Each backend has these common fields:
 "s3": {
   "enabled": true,
   "description": "Swiss Backup – Infomaniak S3",
-  "repository": "s3:https://s3.pub1.infomaniak.cloud/my-bucket",
+  "repository": "s3:https://s3.swiss-backup01.infomaniak.com/default",
   "password": "your-restic-password",
   "env": {
-    "AWS_ACCESS_KEY_ID":     "ACCESS_KEY",
-    "AWS_SECRET_ACCESS_KEY": "SECRET_KEY"
+    "AWS_ACCESS_KEY_ID":     "your-s3-access-key",
+    "AWS_SECRET_ACCESS_KEY": "your-s3-secret-key"
   }
 }
 ```
 
-#### Swift Example (OpenStack / OVH)
+> The S3 endpoint varies by datacenter (`swiss-backup01`, `swiss-backup02`, `swiss-backup03`…). Check your Infomaniak manager panel for the correct hostname. The bucket is usually `default`.
+
+#### Swift Example (Swiss Backup Infomaniak)
 
 ```json
 "swift": {
   "enabled": true,
-  "repository": "swift:my-container:/restic",
+  "description": "Swiss Backup – Infomaniak Swift",
+  "repository": "swift:default:/restic",
   "password": "your-restic-password",
   "env": {
-    "OS_AUTH_URL":   "https://auth.cloud.ovh.net/v3",
-    "OS_USERNAME":   "user",
-    "OS_PASSWORD":   "pass",
-    "OS_TENANT_NAME":"tenant",
-    "OS_REGION_NAME":"GRA"
+    "OS_AUTH_URL":             "https://swiss-backup01.infomaniak.com/identity/v3",
+    "OS_IDENTITY_API_VERSION": "3",
+    "OS_USER_DOMAIN_NAME":     "default",
+    "OS_PROJECT_DOMAIN_NAME":  "default",
+    "OS_PROJECT_NAME":         "sb_project_SBI-AB123456",
+    "OS_TENANT_NAME":          "sb_project_SBI-AB123456",
+    "OS_USERNAME":             "SBI-AB123456",
+    "OS_PASSWORD":             "your-swift-password",
+    "OS_REGION_NAME":          "RegionOne"
   }
 }
 ```
+
+<details>
+<summary><strong>Infomaniak Swiss Backup connection reference</strong></summary>
+
+| Field | Value / Format |
+|-------|---------------|
+| Username | `SBI-AB123456` (from your Infomaniak manager) |
+| Auth URL | `https://swiss-backup0X.infomaniak.com/identity/v3` |
+| API version | `3` (Keystone v3) |
+| User domain | `default` |
+| Project domain | `default` |
+| Project / Tenant | `sb_project_SBI-AB123456` |
+| Region | `RegionOne` |
+| Bucket / Container | `default` |
+
+> Replace `swiss-backup0X` with your actual datacenter number (01, 02, 03…) and `SBI-AB123456` with your real username. These values are displayed in your Infomaniak manager under **Swiss Backup > Connection info**.
+
+</details>
 
 #### SFTP Example
 
@@ -587,31 +612,56 @@ Chaque backend possède les champs communs :
 "s3": {
   "enabled": true,
   "description": "Swiss Backup – Infomaniak S3",
-  "repository": "s3:https://s3.pub1.infomaniak.cloud/mon-bucket",
+  "repository": "s3:https://s3.swiss-backup01.infomaniak.com/default",
   "password": "mot-de-passe-restic",
   "env": {
-    "AWS_ACCESS_KEY_ID":     "ACCESS_KEY",
-    "AWS_SECRET_ACCESS_KEY": "SECRET_KEY"
+    "AWS_ACCESS_KEY_ID":     "votre-cle-acces-s3",
+    "AWS_SECRET_ACCESS_KEY": "votre-cle-secrete-s3"
   }
 }
 ```
 
-#### Exemple Swift (OpenStack / OVH)
+> Le endpoint S3 varie selon le datacenter (`swiss-backup01`, `swiss-backup02`, `swiss-backup03`...). Vérifiez le hostname correct dans votre manager Infomaniak. Le bucket est généralement `default`.
+
+#### Exemple Swift (Swiss Backup Infomaniak)
 
 ```json
 "swift": {
   "enabled": true,
-  "repository": "swift:mon-conteneur:/restic",
+  "description": "Swiss Backup – Infomaniak Swift",
+  "repository": "swift:default:/restic",
   "password": "mot-de-passe-restic",
   "env": {
-    "OS_AUTH_URL":   "https://auth.cloud.ovh.net/v3",
-    "OS_USERNAME":   "user",
-    "OS_PASSWORD":   "pass",
-    "OS_TENANT_NAME":"tenant",
-    "OS_REGION_NAME":"GRA"
+    "OS_AUTH_URL":             "https://swiss-backup01.infomaniak.com/identity/v3",
+    "OS_IDENTITY_API_VERSION": "3",
+    "OS_USER_DOMAIN_NAME":     "default",
+    "OS_PROJECT_DOMAIN_NAME":  "default",
+    "OS_PROJECT_NAME":         "sb_project_SBI-AB123456",
+    "OS_TENANT_NAME":          "sb_project_SBI-AB123456",
+    "OS_USERNAME":             "SBI-AB123456",
+    "OS_PASSWORD":             "votre-mot-de-passe-swift",
+    "OS_REGION_NAME":          "RegionOne"
   }
 }
 ```
+
+<details>
+<summary><strong>Référence des informations de connexion Infomaniak Swiss Backup</strong></summary>
+
+| Champ | Valeur / Format |
+|-------|----------------|
+| Nom d'utilisateur | `SBI-AB123456` (depuis votre manager Infomaniak) |
+| URL d'authentification | `https://swiss-backup0X.infomaniak.com/identity/v3` |
+| Version API | `3` (Keystone v3) |
+| Domaine utilisateur | `default` |
+| Domaine projet | `default` |
+| Projet / Tenant | `sb_project_SBI-AB123456` |
+| Région | `RegionOne` |
+| Bucket / Conteneur | `default` |
+
+> Remplacez `swiss-backup0X` par le numéro de votre datacenter (01, 02, 03...) et `SBI-AB123456` par votre identifiant réel. Ces valeurs sont affichées dans votre manager Infomaniak sous **Swiss Backup > Informations de connexion**.
+
+</details>
 
 #### Exemple SFTP
 

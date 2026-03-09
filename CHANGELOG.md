@@ -28,6 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Backup now shows invalid source paths as warnings instead of silently skipping them
 - Backup uses `System.Diagnostics.Process` for real-time JSON output parsing when verbose mode is enabled
 - Menu numbering updated to accommodate new options (0-11)
+- **S3 backend** example updated: uses Infomaniak Swiss Backup S3 endpoint (`s3.swiss-backup0X.infomaniak.com`)
+- **Swift backend** example updated: replaced generic OVH template with Infomaniak Swiss Backup connection details (Keystone v3, `OS_IDENTITY_API_VERSION`, `OS_PROJECT_NAME`, correct region/domain)
+- Added connection info reference table (EN + FR) for Infomaniak Swiss Backup in README
 
 ---
 
