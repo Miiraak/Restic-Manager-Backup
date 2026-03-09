@@ -340,8 +340,8 @@ function Invoke-Restic {
 
     try {
         if ($Silent) {
-            # Temporarily allow stderr so 2>&1 captures errors as strings
-            # instead of terminating (NativeCommandError under Stop preference).
+            # Temporarily set Continue so 2>&1 captures stderr as ErrorRecord
+            # objects instead of throwing a terminating NativeCommandError.
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             try {
@@ -677,8 +677,9 @@ function Build-BackupArguments {
     param($Config)
 
     $excludeArgs = @()
-    if ($Config.exclusions) {
-        $excludeArgs += $Config.exclusions | ForEach-Object { "--exclude=$_" }
+    $exclusions = Get-ConfigValue -Config $Config -Path "exclusions" -Default @()
+    foreach ($pattern in $exclusions) {
+        $excludeArgs += "--exclude=$pattern"
     }
 
     $excludeCaches = Get-ConfigValue -Config $Config -Path "general.exclude_caches" -Default $false
@@ -1280,13 +1281,12 @@ function Start-DryRunBackup {
     $ofsArg         = $ba.OfsArg
     $tagArgs        = $ba.TagArgs
 
-    # Select one backend for dry-run
-    $selectedBackends = @(Select-Backends -Config $Config -Operation "dry-run")
-    if ($selectedBackends.Count -eq 0) { return }
+    # Select exactly one backend for dry-run
+    $selected = Select-SingleBackend -Config $Config -Operation "dry-run"
+    if (-not $selected) { return }
 
-    $first = $selectedBackends[0]
-    $name    = $first.Name
-    $backend = $first.Value
+    $name    = $selected.Name
+    $backend = $selected.Value
 
     if (-not (Test-BackendNetwork -Name $name)) { return }
 
