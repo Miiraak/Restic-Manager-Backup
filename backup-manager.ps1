@@ -5,8 +5,11 @@
 .DESCRIPTION
     Multi-backend backup tool built on top of restic.
     Supported backends: S3, Swift (OpenStack), SFTP, local disk, USB key.
+    Features: progress bar, verbose output, dry-run, snapshot browsing,
+    per-backend selection, config validation, and more.
 
 .NOTES
+    Version      : 2.0.0
     Requirements : restic.exe placed in .\Restic\restic.exe
     Configuration: .\config.json
     Logs         : .\logs\
@@ -22,6 +25,7 @@ $ErrorActionPreference = "Stop"
 # -----------------------------------------------------------------------------
 $ScriptRoot  = $PSScriptRoot
 $ConfigFile  = Join-Path $ScriptRoot "config.json"
+$ScriptVersion = "2.0.0"
 
 # -----------------------------------------------------------------------------
 # Helper - colored output
@@ -54,6 +58,16 @@ function Write-Info {
     Write-Host "[i] $Text" -ForegroundColor Gray
 }
 
+function Write-Warn {
+    param([string]$Text)
+    Write-Host "[!] $Text" -ForegroundColor DarkYellow
+}
+
+function Write-Detail {
+    param([string]$Text)
+    Write-Host "    $Text" -ForegroundColor DarkGray
+}
+
 # -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
@@ -70,11 +84,11 @@ function Initialize-Log {
     param([string]$LogDir)
     if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
     $script:LogFile = Join-Path $LogDir ("backup_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".log")
-    Write-Log "Session started"
+    Write-Log "Session started (v$ScriptVersion)"
 }
 
 # -----------------------------------------------------------------------------
-# Config loading
+# Config loading & validation
 # -----------------------------------------------------------------------------
 function Load-Config {
     if (-not (Test-Path $ConfigFile)) {
@@ -91,6 +105,93 @@ function Load-Config {
         Write-Err "Failed to parse config.json: $_"
         exit 1
     }
+}
+
+function Test-Config {
+    param($Config)
+
+    $warnings = @()
+
+    # Check general section
+    if (-not $Config.general) {
+        $warnings += "Missing 'general' section in config.json."
+    }
+    else {
+        if (-not $Config.general.restic_exe) { $warnings += "Missing 'general.restic_exe' field." }
+        if (-not $Config.general.log_dir)    { $warnings += "Missing 'general.log_dir' field." }
+        if ($null -eq $Config.general.log_retention_days) { $warnings += "Missing 'general.log_retention_days' field." }
+    }
+
+    # Check sources
+    if (-not $Config.sources -or $Config.sources.Count -eq 0) {
+        $warnings += "No source paths defined in 'sources' section."
+    }
+
+    # Check retention
+    if (-not $Config.retention) {
+        $warnings += "Missing 'retention' section."
+    }
+    else {
+        $retFields = @("keep_last", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly")
+        foreach ($f in $retFields) {
+            if ($null -eq $Config.retention.$f) { $warnings += "Missing 'retention.$f' field." }
+        }
+    }
+
+    # Check backends
+    if (-not $Config.backends) {
+        $warnings += "Missing 'backends' section."
+    }
+    else {
+        $enabledCount = 0
+        $Config.backends.PSObject.Properties | ForEach-Object {
+            $name = $_.Name
+            $b    = $_.Value
+            if ($b.enabled) {
+                $enabledCount++
+                if (-not $b.password) { $warnings += "Backend '$name' is enabled but has no password set." }
+                if ($name -ne "usb" -and -not $b.repository) {
+                    $warnings += "Backend '$name' is enabled but has no repository path."
+                }
+                if ($name -eq "usb") {
+                    if (-not $b.drive_label) { $warnings += "USB backend enabled but 'drive_label' not set." }
+                    if (-not $b.repository_path) { $warnings += "USB backend enabled but 'repository_path' not set." }
+                }
+            }
+        }
+        if ($enabledCount -eq 0) { $warnings += "No backends are enabled. Enable at least one backend." }
+    }
+
+    # Show warnings
+    if ($warnings.Count -gt 0) {
+        Write-Warn "Configuration warnings:"
+        foreach ($w in $warnings) {
+            Write-Detail "- $w"
+        }
+        Write-Host ""
+    }
+
+    return $warnings.Count -eq 0
+}
+
+# -----------------------------------------------------------------------------
+# Config helper - get optional fields with defaults
+# -----------------------------------------------------------------------------
+function Get-ConfigValue {
+    param($Config, [string]$Path, $Default)
+    $parts = $Path.Split(".")
+    $current = $Config
+    foreach ($part in $parts) {
+        if ($null -eq $current) { return $Default }
+        try {
+            $current = $current.$part
+        }
+        catch {
+            return $Default
+        }
+        if ($null -eq $current) { return $Default }
+    }
+    return $current
 }
 
 # -----------------------------------------------------------------------------
@@ -247,6 +348,172 @@ function Invoke-Restic {
 }
 
 # -----------------------------------------------------------------------------
+# Restic command executor with real-time progress bar
+# -----------------------------------------------------------------------------
+function Invoke-ResticWithProgress {
+    param(
+        [string]   $ResticExe,
+        [string]   $Repository,
+        [string]   $Password,
+        [string[]] $Arguments,
+        [string]   $BackendName
+    )
+
+    $env:RESTIC_REPOSITORY = $Repository
+    $env:RESTIC_PASSWORD   = $Password
+
+    Write-Log "restic $Arguments (repo: $Repository)"
+
+    $summary  = $null
+    $lastFile = ""
+    $allOutput = @()
+
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName               = $ResticExe
+        $psi.Arguments              = ($Arguments | ForEach-Object {
+            if ($_ -match '\s') { "`"$_`"" } else { $_ }
+        }) -join " "
+        $psi.UseShellExecute        = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $psi.CreateNoWindow         = $true
+
+        # Pass environment
+        $psi.EnvironmentVariables["RESTIC_REPOSITORY"] = $Repository
+        $psi.EnvironmentVariables["RESTIC_PASSWORD"]   = $Password
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $psi
+        $process.Start() | Out-Null
+
+        # Read stdout line by line for JSON status
+        while (-not $process.StandardOutput.EndOfStream) {
+            $line = $process.StandardOutput.ReadLine()
+            $allOutput += $line
+
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+            try {
+                $json = $line | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if (-not $json) { continue }
+
+                if ($json.message_type -eq "status") {
+                    # Real-time progress update
+                    $pctDone = 0
+                    if ($json.total_bytes -and $json.total_bytes -gt 0) {
+                        $pctDone = [math]::Min(100, [math]::Round(($json.bytes_done / $json.total_bytes) * 100, 1))
+                    }
+                    elseif ($json.total_files -and $json.total_files -gt 0) {
+                        $pctDone = [math]::Min(100, [math]::Round(($json.files_done / $json.total_files) * 100, 1))
+                    }
+
+                    # Current file being processed
+                    if ($json.current_files -and $json.current_files.Count -gt 0) {
+                        $lastFile = $json.current_files[0]
+                        if ($lastFile.Length -gt 60) {
+                            $lastFile = "..." + $lastFile.Substring($lastFile.Length - 57)
+                        }
+                    }
+
+                    $filesDone  = if ($json.files_done)  { $json.files_done }  else { 0 }
+                    $totalFiles = if ($json.total_files)  { $json.total_files } else { 0 }
+                    $bytesDone  = if ($json.bytes_done)   { $json.bytes_done }  else { 0 }
+
+                    $bytesDoneMB = [math]::Round($bytesDone / 1MB, 1)
+
+                    $statusText = "[$BackendName] Files: $filesDone/$totalFiles | ${bytesDoneMB} MiB | $lastFile"
+
+                    Write-Progress -Activity "Backup to $BackendName" `
+                                   -Status $statusText `
+                                   -PercentComplete ([math]::Min(100, [math]::Max(0, $pctDone)))
+                }
+                elseif ($json.message_type -eq "summary") {
+                    $summary = $json
+                }
+            }
+            catch {
+                # Not JSON or parse error - ignore
+            }
+        }
+
+        # Read any remaining stderr
+        $stderr = $process.StandardError.ReadToEnd()
+        if ($stderr) { $allOutput += $stderr }
+
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+    }
+    finally {
+        Remove-Item Env:\RESTIC_REPOSITORY -ErrorAction SilentlyContinue
+        Remove-Item Env:\RESTIC_PASSWORD   -ErrorAction SilentlyContinue
+        Write-Progress -Activity "Backup to $BackendName" -Completed
+    }
+
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output   = $allOutput
+        Summary  = $summary
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Backend selection helper
+# -----------------------------------------------------------------------------
+function Select-Backends {
+    param($Config, [string]$Operation)
+
+    $enabledBackends = $Config.backends.PSObject.Properties | Where-Object { $_.Value.enabled }
+    if (-not $enabledBackends) {
+        Write-Err "No enabled backends found."
+        return @()
+    }
+
+    $enabledList = @($enabledBackends)
+    if ($enabledList.Count -eq 1) {
+        return $enabledList
+    }
+
+    Write-Host ""
+    Write-Host "  Select backends for ${Operation}:" -ForegroundColor White
+    Write-Host "  [A] All enabled backends ($($enabledList.Count))" -ForegroundColor White
+    $i = 1
+    foreach ($prop in $enabledList) {
+        Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
+        $i++
+    }
+
+    $input = Read-Host "  Your choice (A or number)"
+
+    if ($input -eq "A" -or $input -eq "a" -or $input -eq "") {
+        return $enabledList
+    }
+
+    [int]$choiceNumber = 0
+    if ([int]::TryParse($input, [ref]$choiceNumber) -and $choiceNumber -ge 1 -and $choiceNumber -le $enabledList.Count) {
+        return @($enabledList[$choiceNumber - 1])
+    }
+
+    Write-Err "Invalid selection. Using all backends."
+    return $enabledList
+}
+
+# -----------------------------------------------------------------------------
+# Network check helper for backend
+# -----------------------------------------------------------------------------
+function Test-BackendNetwork {
+    param([string]$Name)
+    if ($Name -in @("s3", "swift", "sftp")) {
+        if (-not (Test-NetworkAvailable)) {
+            Write-Err "[$Name] No network available - skipped."
+            Write-Log "[$Name] skipped (no network)" "WARN"
+            return $false
+        }
+    }
+    return $true
+}
+
+# -----------------------------------------------------------------------------
 # 1. Initialize repository
 # -----------------------------------------------------------------------------
 function Initialize-Repository {
@@ -260,15 +527,7 @@ function Initialize-Repository {
         $backend = $prop.Value
 
         if (-not $backend.enabled) { Write-Info "[$name] disabled - skipped."; continue }
-
-        # Network check for remote backends
-        if ($name -in @("s3", "swift", "sftp")) {
-            if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available - skipped."
-                Write-Log "[$name] skipped (no network)" "WARN"
-                continue
-            }
-        }
+        if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         Write-Step "Initializing backend: $name ($($backend.description))"
         Write-Log "Initializing backend: $name"
@@ -301,7 +560,7 @@ function Initialize-Repository {
 }
 
 # -----------------------------------------------------------------------------
-# 2. Run backup
+# 2. Run backup (with progress bar and verbose output)
 # -----------------------------------------------------------------------------
 function Start-Backup {
     param($Config, [string]$ResticExe)
@@ -309,81 +568,204 @@ function Start-Backup {
     Write-Header "Run backup"
 
     # Build source list (expand %USERNAME% etc.)
-    $sources = $Config.sources | ForEach-Object { [System.Environment]::ExpandEnvironmentVariables($_) } |
-               Where-Object { Test-Path $_ }
+    $sources = $Config.sources | ForEach-Object { [System.Environment]::ExpandEnvironmentVariables($_) }
 
-    if ($sources.Count -eq 0) {
+    # Validate sources
+    $validSources   = @()
+    $invalidSources = @()
+    foreach ($src in $sources) {
+        if (Test-Path $src) { $validSources += $src }
+        else { $invalidSources += $src }
+    }
+
+    if ($invalidSources.Count -gt 0) {
+        Write-Warn "The following source paths were not found and will be skipped:"
+        foreach ($inv in $invalidSources) {
+            Write-Detail "- $inv"
+        }
+    }
+
+    if ($validSources.Count -eq 0) {
         Write-Err "No valid source paths found. Check the 'sources' section in config.json."
         return
     }
 
+    Write-Info "Sources to back up ($($validSources.Count)):"
+    foreach ($src in $validSources) {
+        Write-Detail "- $src"
+    }
+
     # Build exclusion flags
-    $excludeArgs = $Config.exclusions | ForEach-Object { "--exclude=$_" }
+    $excludeArgs = @()
+    if ($Config.exclusions) {
+        $excludeArgs += $Config.exclusions | ForEach-Object { "--exclude=$_" }
+    }
 
-    $startTime = Get-Date
+    # Optional: exclude caches
+    $excludeCaches = Get-ConfigValue -Config $Config -Path "general.exclude_caches" -Default $false
+    if ($excludeCaches) {
+        $excludeArgs += "--exclude-caches"
+    }
 
-    $backends = $Config.backends.PSObject.Properties
-    foreach ($prop in $backends) {
+    # Optional: exclude if present
+    $excludeIfPresent = Get-ConfigValue -Config $Config -Path "general.exclude_if_present" -Default @()
+    foreach ($marker in $excludeIfPresent) {
+        $excludeArgs += "--exclude-if-present=$marker"
+    }
+
+    # Compression setting
+    $compression = Get-ConfigValue -Config $Config -Path "general.compression" -Default "auto"
+    $compressionArg = "--compression=$compression"
+
+    # One file system
+    $oneFileSystem = Get-ConfigValue -Config $Config -Path "general.one_file_system" -Default $false
+    $ofsArg = @()
+    if ($oneFileSystem) { $ofsArg = @("--one-file-system") }
+
+    # Tags
+    $tags = Get-ConfigValue -Config $Config -Path "general.tags" -Default @()
+    $tagArgs = @()
+    foreach ($tag in $tags) {
+        $tagArgs += @("--tag", $tag)
+    }
+
+    # Verbose
+    $verbose = Get-ConfigValue -Config $Config -Path "general.verbose" -Default $true
+
+    # Backend selection
+    $selectedBackends = Select-Backends -Config $Config -Operation "backup"
+    if ($selectedBackends.Count -eq 0) { return }
+
+    $overallStart = Get-Date
+    $backendResults = @()
+
+    foreach ($prop in $selectedBackends) {
         $name    = $prop.Name
         $backend = $prop.Value
 
-        if (-not $backend.enabled) { Write-Info "[$name] disabled - skipped."; continue }
-
-        # Network check for remote backends
-        if ($name -in @("s3", "swift", "sftp")) {
-            if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available - skipped."
-                Write-Log "[$name] skipped (no network)" "WARN"
-                continue
-            }
-        }
+        if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
         if (-not $repo) { continue }
 
+        Write-Host ""
         Write-Step "Backing up to: $name ($($backend.description))"
         Write-Log "Starting backup to [$name] repo: $repo"
 
+        $backendStart = Get-Date
+
         Set-BackendEnv -Backend $backend
         try {
-            $backupArgs = @("backup") + $sources + $excludeArgs + @("--compression=auto", "--json")
+            if ($verbose) {
+                # Use progress bar with JSON output
+                $backupArgs = @("backup") + $validSources + $excludeArgs + @($compressionArg, "--json") + $ofsArg + $tagArgs
 
-            $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                                    -Password $backend.password -Arguments $backupArgs -Silent
+                $result = Invoke-ResticWithProgress -ResticExe $ResticExe -Repository $repo `
+                                                    -Password $backend.password `
+                                                    -Arguments $backupArgs `
+                                                    -BackendName $name
+            }
+            else {
+                # Silent mode
+                $backupArgs = @("backup") + $validSources + $excludeArgs + @($compressionArg, "--json") + $ofsArg + $tagArgs
+
+                $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                                        -Password $backend.password -Arguments $backupArgs -Silent
+
+                # Parse summary from output
+                $summaryLine = ($result.Output | Select-String '"message_type":"summary"').Line
+                if ($summaryLine) {
+                    try { $result | Add-Member -NotePropertyName Summary -NotePropertyValue ($summaryLine | ConvertFrom-Json) -ErrorAction SilentlyContinue } catch {}
+                }
+            }
         }
         finally {
             Clear-BackendEnv -Backend $backend
         }
 
-        if ($result.ExitCode -eq 0) {
-            Write-OK "[$name] backup completed."
-            Write-Log "[$name] backup OK" "INFO"
+        $backendDuration = (Get-Date) - $backendStart
 
-            # Parse JSON summary from restic output
-            $summaryLine = ($result.Output | Select-String '"message_type":"summary"').Line
-            if ($summaryLine) {
-                try {
-                    $summary = $summaryLine | ConvertFrom-Json
-                    Write-Info ("  Files new/changed : {0} / {1}" -f $summary.files_new, $summary.files_changed)
-                    Write-Info ("  Data added        : {0:F2} MiB" -f ($summary.data_added / 1MB))
-                    Write-Info ("  Total duration    : {0:F1} s"   -f $summary.total_duration)
-                    Write-Log  ("[$name] files_new={0} files_changed={1} data_added={2}B duration={3}s" -f
-                                $summary.files_new, $summary.files_changed,
-                                $summary.data_added, $summary.total_duration) "INFO"
+        if ($result.ExitCode -eq 0) {
+            Write-OK "[$name] backup completed in $($backendDuration.ToString('mm\:ss'))."
+            Write-Log "[$name] backup OK (duration: $($backendDuration.ToString('mm\:ss')))" "INFO"
+
+            # Display summary
+            $summary = $result.Summary
+            if (-not $summary -and $result.Output) {
+                # Try to parse summary from output
+                foreach ($line in $result.Output) {
+                    if ($line -match '"message_type"\s*:\s*"summary"') {
+                        try { $summary = $line | ConvertFrom-Json } catch {}
+                    }
                 }
-                catch {}
+            }
+
+            if ($summary) {
+                Write-Host ""
+                Write-Host "  Backup Summary for [$name]:" -ForegroundColor Green
+                Write-Detail ("  Files new      : {0}" -f $summary.files_new)
+                Write-Detail ("  Files changed  : {0}" -f $summary.files_changed)
+                Write-Detail ("  Files unchanged: {0}" -f $summary.files_unmodified)
+                Write-Detail ("  Data added     : {0:F2} MiB" -f ($summary.data_added / 1MB))
+                Write-Detail ("  Total files    : {0}" -f $summary.total_files_processed)
+                Write-Detail ("  Total bytes    : {0:F2} MiB" -f ($summary.total_bytes_processed / 1MB))
+                Write-Detail ("  Duration       : {0:F1} s" -f $summary.total_duration)
+                Write-Detail ("  Snapshot ID    : {0}" -f $summary.snapshot_id)
+
+                Write-Log ("[$name] files_new={0} files_changed={1} files_unmodified={2} data_added={3}B total_files={4} duration={5}s snapshot={6}" -f `
+                    $summary.files_new, $summary.files_changed, $summary.files_unmodified,
+                    $summary.data_added, $summary.total_files_processed,
+                    $summary.total_duration, $summary.snapshot_id) "INFO"
+
+                $backendResults += [PSCustomObject]@{
+                    Backend    = $name
+                    Status     = "OK"
+                    FilesNew   = $summary.files_new
+                    FilesChg   = $summary.files_changed
+                    DataAdded  = "{0:F2} MiB" -f ($summary.data_added / 1MB)
+                    Duration   = "{0:F1} s" -f $summary.total_duration
+                    SnapshotID = if ($summary.snapshot_id) { $summary.snapshot_id.Substring(0, [math]::Min(8, $summary.snapshot_id.Length)) } else { "N/A" }
+                }
+            }
+            else {
+                $backendResults += [PSCustomObject]@{
+                    Backend    = $name
+                    Status     = "OK"
+                    FilesNew   = "N/A"
+                    FilesChg   = "N/A"
+                    DataAdded  = "N/A"
+                    Duration   = $backendDuration.ToString('mm\:ss')
+                    SnapshotID = "N/A"
+                }
             }
         }
         else {
             Write-Err "[$name] backup failed (exit $($result.ExitCode))."
             $lastLine = if ($result.Output) { ($result.Output | Select-Object -Last 1).ToString() } else { "(no output)" }
             Write-Log "[$name] backup failed: $lastLine" "ERROR"
+
+            $backendResults += [PSCustomObject]@{
+                Backend    = $name
+                Status     = "FAILED"
+                FilesNew   = "-"
+                FilesChg   = "-"
+                DataAdded  = "-"
+                Duration   = $backendDuration.ToString('mm\:ss')
+                SnapshotID = "-"
+            }
         }
     }
 
-    $duration = (Get-Date) - $startTime
-    Write-Info ("Total elapsed time: {0:mm\:ss}" -f $duration)
-    Write-Log ("Total backup duration: {0:mm\:ss}" -f $duration)
+    # Overall summary table
+    $overallDuration = (Get-Date) - $overallStart
+
+    if ($backendResults.Count -gt 0) {
+        Write-Host ""
+        Write-Header "Backup Summary"
+        $backendResults | Format-Table -AutoSize
+        Write-Info ("Total elapsed time: {0:mm\:ss}" -f $overallDuration)
+        Write-Log ("Total backup duration: {0:mm\:ss}" -f $overallDuration)
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -400,15 +782,7 @@ function Show-Snapshots {
         $backend = $prop.Value
 
         if (-not $backend.enabled) { continue }
-
-        # Network check for remote backends
-        if ($name -in @("s3", "swift", "sftp")) {
-            if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available - skipped."
-                Write-Log "[$name] skipped (no network)" "WARN"
-                continue
-            }
-        }
+        if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
         if (-not $repo) { continue }
@@ -427,7 +801,7 @@ function Show-Snapshots {
 }
 
 # -----------------------------------------------------------------------------
-# 4. Restore backup
+# 4. Restore backup (with include/exclude filters)
 # -----------------------------------------------------------------------------
 function Restore-Backup {
     param($Config, [string]$ResticExe)
@@ -475,12 +849,26 @@ function Restore-Backup {
             return
         }
 
+        # Optional include/exclude filters
+        $filterArgs = @()
+        Write-Host ""
+        Write-Info "Optional: You can filter which files to restore."
+        $includePattern = Read-Host "Include pattern (e.g. '*.docx') or press Enter to skip"
+        if (-not [string]::IsNullOrWhiteSpace($includePattern)) {
+            $filterArgs += @("--include", $includePattern)
+        }
+        $excludePattern = Read-Host "Exclude pattern (e.g. '*.tmp') or press Enter to skip"
+        if (-not [string]::IsNullOrWhiteSpace($excludePattern)) {
+            $filterArgs += @("--exclude", $excludePattern)
+        }
+
         Write-Step "Restoring snapshot '$snapshotId' to '$restorePath'..."
         Write-Log "Restoring [$name] snapshot $snapshotId to $restorePath"
 
+        $restoreArgs = @("restore", $snapshotId, "--target", $restorePath) + $filterArgs
         Invoke-Restic -ResticExe $ResticExe -Repository $repo `
                       -Password $backend.password `
-                      -Arguments @("restore", $snapshotId, "--target", $restorePath)
+                      -Arguments $restoreArgs
     }
     finally {
         Clear-BackendEnv -Backend $backend
@@ -501,15 +889,7 @@ function Test-Repository {
         $backend = $prop.Value
 
         if (-not $backend.enabled) { continue }
-
-        # Network check for remote backends
-        if ($name -in @("s3", "swift", "sftp")) {
-            if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available - skipped."
-                Write-Log "[$name] skipped (no network)" "WARN"
-                continue
-            }
-        }
+        if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
         if (-not $repo) { continue }
@@ -538,7 +918,7 @@ function Test-Repository {
 }
 
 # -----------------------------------------------------------------------------
-# 6. Prune repository
+# 6. Prune repository (with confirmation)
 # -----------------------------------------------------------------------------
 function Invoke-Prune {
     param($Config, [string]$ResticExe)
@@ -546,6 +926,22 @@ function Invoke-Prune {
     Write-Header "Prune repository"
 
     $ret = $Config.retention
+
+    # Show retention policy and ask for confirmation
+    Write-Info "Current retention policy:"
+    Write-Detail "  keep_last    : $($ret.keep_last)"
+    Write-Detail "  keep_daily   : $($ret.keep_daily)"
+    Write-Detail "  keep_weekly  : $($ret.keep_weekly)"
+    Write-Detail "  keep_monthly : $($ret.keep_monthly)"
+    Write-Detail "  keep_yearly  : $($ret.keep_yearly)"
+    Write-Host ""
+    Write-Warn "Pruning will permanently delete snapshots that do not match the retention policy."
+    $confirm = Read-Host "Continue? (y/N)"
+    if ($confirm -ne "y" -and $confirm -ne "Y") {
+        Write-Info "Prune cancelled."
+        return
+    }
+
     $retArgs = @(
         "--keep-last",    $ret.keep_last,
         "--keep-daily",   $ret.keep_daily,
@@ -560,15 +956,7 @@ function Invoke-Prune {
         $backend = $prop.Value
 
         if (-not $backend.enabled) { continue }
-
-        # Network check for remote backends
-        if ($name -in @("s3", "swift", "sftp")) {
-            if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available - skipped."
-                Write-Log "[$name] skipped (no network)" "WARN"
-                continue
-            }
-        }
+        if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
         if (-not $repo) { continue }
@@ -611,15 +999,7 @@ function Show-Stats {
         $backend = $prop.Value
 
         if (-not $backend.enabled) { continue }
-
-        # Network check for remote backends
-        if ($name -in @("s3", "swift", "sftp")) {
-            if (-not (Test-NetworkAvailable)) {
-                Write-Err "[$name] No network available - skipped."
-                Write-Log "[$name] skipped (no network)" "WARN"
-                continue
-            }
-        }
+        if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
         if (-not $repo) { continue }
@@ -679,6 +1059,201 @@ function Show-Targets {
 }
 
 # -----------------------------------------------------------------------------
+# 9. Unlock repository
+# -----------------------------------------------------------------------------
+function Unlock-Repository {
+    param($Config, [string]$ResticExe)
+
+    Write-Header "Unlock repository"
+    Write-Info "Removes stale locks from repositories (e.g. after a crashed backup)."
+
+    $backends = $Config.backends.PSObject.Properties
+    foreach ($prop in $backends) {
+        $name    = $prop.Name
+        $backend = $prop.Value
+
+        if (-not $backend.enabled) { continue }
+        if (-not (Test-BackendNetwork -Name $name)) { continue }
+
+        $repo = Resolve-Repository -BackendName $name -Backend $backend
+        if (-not $repo) { continue }
+
+        Write-Step "Unlocking backend: $name"
+        Write-Log "Unlocking [$name]"
+
+        Set-BackendEnv -Backend $backend
+        try {
+            $exit = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                                  -Password $backend.password -Arguments @("unlock")
+        }
+        finally {
+            Clear-BackendEnv -Backend $backend
+        }
+
+        if ($exit -eq 0) {
+            Write-OK "[$name] repository unlocked."
+            Write-Log "[$name] unlock OK" "INFO"
+        }
+        else {
+            Write-Err "[$name] unlock failed (exit $exit)."
+            Write-Log "[$name] unlock failed" "ERROR"
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 10. Browse snapshot contents
+# -----------------------------------------------------------------------------
+function Show-SnapshotContents {
+    param($Config, [string]$ResticExe)
+
+    Write-Header "Browse snapshot contents"
+
+    # Choose backend
+    $enabledBackends = $Config.backends.PSObject.Properties | Where-Object { $_.Value.enabled }
+    if (-not $enabledBackends) { Write-Err "No enabled backends."; return }
+
+    Write-Host "Available backends:" -ForegroundColor White
+    $i = 1
+    $map = @{}
+    foreach ($prop in $enabledBackends) {
+        Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
+        $map[$i] = $prop
+        $i++
+    }
+    $choiceInput = Read-Host "Select backend number"
+    [int]$choiceNumber = 0
+    if (-not [int]::TryParse($choiceInput, [ref]$choiceNumber)) {
+        Write-Err "Invalid selection."
+        return
+    }
+    $selected = $map[$choiceNumber]
+    if (-not $selected) { Write-Err "Invalid selection."; return }
+
+    $name    = $selected.Name
+    $backend = $selected.Value
+
+    $repo = Resolve-Repository -BackendName $name -Backend $backend
+    if (-not $repo) { return }
+
+    Set-BackendEnv -Backend $backend
+    try {
+        Write-Step "Listing snapshots for [$name]..."
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                      -Password $backend.password -Arguments @("snapshots")
+
+        $snapshotId = Read-Host "Enter snapshot ID to browse (or 'latest')"
+
+        Write-Step "Listing files in snapshot '$snapshotId'..."
+        Write-Log "Browsing [$name] snapshot $snapshotId"
+
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                      -Password $backend.password -Arguments @("ls", $snapshotId)
+    }
+    finally {
+        Clear-BackendEnv -Backend $backend
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 11. Dry-run backup
+# -----------------------------------------------------------------------------
+function Start-DryRunBackup {
+    param($Config, [string]$ResticExe)
+
+    Write-Header "Dry-run backup (preview)"
+    Write-Info "This will show what would be backed up without actually storing any data."
+
+    # Build source list
+    $sources = $Config.sources | ForEach-Object { [System.Environment]::ExpandEnvironmentVariables($_) } |
+               Where-Object { Test-Path $_ }
+
+    if ($sources.Count -eq 0) {
+        Write-Err "No valid source paths found."
+        return
+    }
+
+    # Build exclusion flags
+    $excludeArgs = @()
+    if ($Config.exclusions) {
+        $excludeArgs += $Config.exclusions | ForEach-Object { "--exclude=$_" }
+    }
+
+    $excludeCaches = Get-ConfigValue -Config $Config -Path "general.exclude_caches" -Default $false
+    if ($excludeCaches) { $excludeArgs += "--exclude-caches" }
+
+    $excludeIfPresent = Get-ConfigValue -Config $Config -Path "general.exclude_if_present" -Default @()
+    foreach ($marker in $excludeIfPresent) {
+        $excludeArgs += "--exclude-if-present=$marker"
+    }
+
+    $compression = Get-ConfigValue -Config $Config -Path "general.compression" -Default "auto"
+    $compressionArg = "--compression=$compression"
+
+    $oneFileSystem = Get-ConfigValue -Config $Config -Path "general.one_file_system" -Default $false
+    $ofsArg = @()
+    if ($oneFileSystem) { $ofsArg = @("--one-file-system") }
+
+    $tags = Get-ConfigValue -Config $Config -Path "general.tags" -Default @()
+    $tagArgs = @()
+    foreach ($tag in $tags) { $tagArgs += @("--tag", $tag) }
+
+    # Select one backend for dry-run
+    $enabledBackends = $Config.backends.PSObject.Properties | Where-Object { $_.Value.enabled }
+    if (-not $enabledBackends) { Write-Err "No enabled backends."; return }
+
+    $first = @($enabledBackends)[0]
+    $name    = $first.Name
+    $backend = $first.Value
+
+    if (-not (Test-BackendNetwork -Name $name)) { return }
+
+    $repo = Resolve-Repository -BackendName $name -Backend $backend
+    if (-not $repo) { return }
+
+    Write-Step "Dry-run backup using backend: $name"
+    Write-Log "Dry-run backup [$name]"
+
+    $backupArgs = @("backup", "--dry-run") + $sources + $excludeArgs + @($compressionArg, "--json") + $ofsArg + $tagArgs
+
+    Set-BackendEnv -Backend $backend
+    try {
+        $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                                -Password $backend.password -Arguments $backupArgs -Silent
+    }
+    finally {
+        Clear-BackendEnv -Backend $backend
+    }
+
+    if ($result.ExitCode -eq 0) {
+        Write-OK "Dry-run completed."
+
+        # Parse summary
+        foreach ($line in $result.Output) {
+            $lineStr = $line.ToString()
+            if ($lineStr -match '"message_type"\s*:\s*"summary"') {
+                try {
+                    $summary = $lineStr | ConvertFrom-Json
+                    Write-Host ""
+                    Write-Info "Dry-run summary (no data was written):"
+                    Write-Detail ("  Files new      : {0}" -f $summary.files_new)
+                    Write-Detail ("  Files changed  : {0}" -f $summary.files_changed)
+                    Write-Detail ("  Files unchanged: {0}" -f $summary.files_unmodified)
+                    Write-Detail ("  Total files    : {0}" -f $summary.total_files_processed)
+                    Write-Detail ("  Total bytes    : {0:F2} MiB" -f ($summary.total_bytes_processed / 1MB))
+                }
+                catch {}
+            }
+        }
+    }
+    else {
+        Write-Err "Dry-run failed (exit $($result.ExitCode))."
+        $lastLine = if ($result.Output) { ($result.Output | Select-Object -Last 1).ToString() } else { "(no output)" }
+        Write-Err $lastLine
+    }
+}
+
+# -----------------------------------------------------------------------------
 # Purge old log files
 # -----------------------------------------------------------------------------
 function Remove-OldLogs {
@@ -698,6 +1273,35 @@ function Remove-OldLogs {
 }
 
 # -----------------------------------------------------------------------------
+# Startup banner
+# -----------------------------------------------------------------------------
+function Show-Banner {
+    param($Config)
+    Write-Host ""
+    Write-Host ("=" * 60) -ForegroundColor Cyan
+    Write-Host "   Restic Manager Backup v$ScriptVersion" -ForegroundColor Cyan
+    Write-Host "   Multi-backend CLI for Windows" -ForegroundColor Cyan
+    Write-Host ("=" * 60) -ForegroundColor Cyan
+
+    # Show enabled backends
+    $enabled = @()
+    $Config.backends.PSObject.Properties | ForEach-Object {
+        if ($_.Value.enabled) { $enabled += "$($_.Name)" }
+    }
+    if ($enabled.Count -gt 0) {
+        Write-Info "Enabled backends: $($enabled -join ', ')"
+    }
+    else {
+        Write-Warn "No backends are enabled."
+    }
+
+    # Show source count
+    if ($Config.sources) {
+        Write-Info "Source paths configured: $($Config.sources.Count)"
+    }
+}
+
+# -----------------------------------------------------------------------------
 # Main menu
 # -----------------------------------------------------------------------------
 function Show-Menu {
@@ -705,15 +1309,18 @@ function Show-Menu {
     Write-Host ("=" * 60) -ForegroundColor Cyan
     Write-Host "   Restic Manager Backup - Multi-backend CLI" -ForegroundColor Cyan
     Write-Host ("=" * 60) -ForegroundColor Cyan
-    Write-Host "  1. Initialize repository"          -ForegroundColor White
-    Write-Host "  2. Run backup (all enabled backends)" -ForegroundColor White
-    Write-Host "  3. List snapshots"                 -ForegroundColor White
-    Write-Host "  4. Restore backup"                 -ForegroundColor White
-    Write-Host "  5. Verify repository"              -ForegroundColor White
-    Write-Host "  6. Prune repository"               -ForegroundColor White
-    Write-Host "  7. Repository statistics"          -ForegroundColor White
-    Write-Host "  8. Detect available targets"       -ForegroundColor White
-    Write-Host "  0. Quit"                           -ForegroundColor DarkGray
+    Write-Host "  1.  Initialize repository"               -ForegroundColor White
+    Write-Host "  2.  Run backup"                          -ForegroundColor White
+    Write-Host "  3.  List snapshots"                      -ForegroundColor White
+    Write-Host "  4.  Restore backup"                      -ForegroundColor White
+    Write-Host "  5.  Verify repository"                   -ForegroundColor White
+    Write-Host "  6.  Prune repository"                    -ForegroundColor White
+    Write-Host "  7.  Repository statistics"               -ForegroundColor White
+    Write-Host "  8.  Detect available targets"            -ForegroundColor White
+    Write-Host "  9.  Unlock repository"                   -ForegroundColor White
+    Write-Host "  10. Browse snapshot contents"            -ForegroundColor White
+    Write-Host "  11. Dry-run backup (preview)"            -ForegroundColor White
+    Write-Host "  0.  Quit"                                -ForegroundColor DarkGray
     Write-Host ("=" * 60) -ForegroundColor Cyan
 }
 
@@ -725,6 +1332,12 @@ $ResticExe = Get-ResticExe -Config $Config
 $LogDir    = Join-Path $ScriptRoot $Config.general.log_dir
 Initialize-Log -LogDir $LogDir
 
+# Validate config
+Test-Config -Config $Config | Out-Null
+
+# Show startup banner
+Show-Banner -Config $Config
+
 # Purge old logs
 Remove-OldLogs -LogDir $LogDir -RetentionDays $Config.general.log_retention_days
 
@@ -733,21 +1346,24 @@ while ($true) {
     $choice = Read-Host "Enter your choice"
 
     switch ($choice) {
-        "1" { Initialize-Repository -Config $Config -ResticExe $ResticExe }
-        "2" { Start-Backup          -Config $Config -ResticExe $ResticExe }
-        "3" { Show-Snapshots        -Config $Config -ResticExe $ResticExe }
-        "4" { Restore-Backup        -Config $Config -ResticExe $ResticExe }
-        "5" { Test-Repository       -Config $Config -ResticExe $ResticExe }
-        "6" { Invoke-Prune          -Config $Config -ResticExe $ResticExe }
-        "7" { Show-Stats            -Config $Config -ResticExe $ResticExe }
-        "8" { Show-Targets          -Config $Config }
-        "0" {
+        "1"  { Initialize-Repository  -Config $Config -ResticExe $ResticExe }
+        "2"  { Start-Backup           -Config $Config -ResticExe $ResticExe }
+        "3"  { Show-Snapshots         -Config $Config -ResticExe $ResticExe }
+        "4"  { Restore-Backup         -Config $Config -ResticExe $ResticExe }
+        "5"  { Test-Repository        -Config $Config -ResticExe $ResticExe }
+        "6"  { Invoke-Prune           -Config $Config -ResticExe $ResticExe }
+        "7"  { Show-Stats             -Config $Config -ResticExe $ResticExe }
+        "8"  { Show-Targets           -Config $Config }
+        "9"  { Unlock-Repository      -Config $Config -ResticExe $ResticExe }
+        "10" { Show-SnapshotContents  -Config $Config -ResticExe $ResticExe }
+        "11" { Start-DryRunBackup     -Config $Config -ResticExe $ResticExe }
+        "0"  {
             Write-Log "Session ended by user"
             Write-Host "`nGoodbye!" -ForegroundColor Cyan
             exit 0
         }
         default {
-            Write-Err "Invalid choice. Please enter a number between 0 and 8."
+            Write-Err "Invalid choice. Please enter a number between 0 and 11."
         }
     }
 
