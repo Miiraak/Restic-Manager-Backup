@@ -80,7 +80,21 @@ function Write-AsciiProgress {
     )
 
     $width = 120
-    try { $width = [Console]::BufferWidth } catch {}
+    try {
+        # Prefer the visible window width to avoid wrapping when buffer > window
+        $width = [Console]::WindowWidth
+    } catch {
+        try {
+            $width = [Console]::BufferWidth
+        } catch {
+            # Fall back to the default width if console information is unavailable
+        }
+    }
+
+    # Clamp to a sane minimum to avoid zero/negative lengths
+    if (-not $width -or $width -lt 20) {
+        $width = 20
+    }
     $maxLen = $width - 1   # leave 1-char margin to avoid line wrap
 
     if ($Completed) {
@@ -123,11 +137,6 @@ function Write-AsciiProgress {
             $Status = $Status.Substring(0, $maxStatus)
         }
     }
-
-    # Compose and pad
-    $line = "  $Activity [$barFilled$barEmpty] $pctStr  $Status"
-    if ($line.Length -lt $maxLen) { $line = $line.PadRight($maxLen) }
-    if ($line.Length -gt $maxLen) { $line = $line.Substring(0, $maxLen) }
 
     # Write the bar with colors via individual segments
     Write-Host "`r" -NoNewline
@@ -539,7 +548,7 @@ function Invoke-ResticWithProgress {
 
                     # Percentage: prefer restic-provided percent_done (0..1), fall back to bytes or files ratio
                     $pctDone = 0
-                    if ($json.percent_done) {
+                    if ($null -ne $json.percent_done) {
                         $pctDone = [math]::Min(100, [math]::Round($json.percent_done * 100, 1))
                     }
                     elseif ($json.total_bytes -and $json.total_bytes -gt 0) {
@@ -1105,10 +1114,10 @@ function Restore-Backup {
             if ($summary) {
                 Write-Host ""
                 Write-Host "  Restore Summary for [$name]:" -ForegroundColor Green
-                if ($summary.files_restored)  { Write-Detail ("  Files restored : {0}" -f $summary.files_restored) }
-                if ($summary.total_files)     { Write-Detail ("  Total files    : {0}" -f $summary.total_files) }
-                if ($summary.bytes_restored)  { Write-Detail ("  Bytes restored : {0:F2} MiB" -f ($summary.bytes_restored / 1MB)) }
-                if ($summary.total_bytes)     { Write-Detail ("  Total bytes    : {0:F2} MiB" -f ($summary.total_bytes / 1MB)) }
+                if ($null -ne $summary.files_restored)  { Write-Detail ("  Files restored : {0}" -f $summary.files_restored) }
+                if ($null -ne $summary.total_files)     { Write-Detail ("  Total files    : {0}" -f $summary.total_files) }
+                if ($null -ne $summary.bytes_restored)  { Write-Detail ("  Bytes restored : {0:F2} MiB" -f ($summary.bytes_restored / 1MB)) }
+                if ($null -ne $summary.total_bytes)     { Write-Detail ("  Total bytes    : {0:F2} MiB" -f ($summary.total_bytes / 1MB)) }
             }
         }
         else {
