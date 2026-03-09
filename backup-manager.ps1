@@ -1539,7 +1539,7 @@ function Invoke-OtherMenu {
             "6" { Remove-ResticInstallation -Config $Config }
             "0" { return }
             default {
-                Write-Err "Invalid choice. Please enter a number between 0 and 6."
+                Write-Err "Invalid choice. Please enter a number from 0 to 6."
                 continue
             }
         }
@@ -1664,7 +1664,7 @@ while ($true) {
             exit 0
         }
         default {
-            Write-Err "Invalid choice. Please enter a number between 0 and 7."
+            Write-Err "Invalid choice. Please enter a number from 0 to 7."
         }
     }
 
