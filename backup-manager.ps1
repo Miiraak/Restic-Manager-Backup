@@ -1105,10 +1105,10 @@ function Restore-Backup {
             if ($summary) {
                 Write-Host ""
                 Write-Host "  Restore Summary for [$name]:" -ForegroundColor Green
-                $filesRestored = if ($summary.files_restored)  { $summary.files_restored } else { $summary.total_files }
-                $bytesRestored = if ($summary.bytes_restored)   { $summary.bytes_restored } else { $summary.total_bytes }
-                if ($filesRestored) { Write-Detail ("  Files restored : {0}" -f $filesRestored) }
-                if ($bytesRestored) { Write-Detail ("  Bytes restored : {0:F2} MiB" -f ($bytesRestored / 1MB)) }
+                if ($summary.files_restored)  { Write-Detail ("  Files restored : {0}" -f $summary.files_restored) }
+                if ($summary.total_files)     { Write-Detail ("  Total files    : {0}" -f $summary.total_files) }
+                if ($summary.bytes_restored)  { Write-Detail ("  Bytes restored : {0:F2} MiB" -f ($summary.bytes_restored / 1MB)) }
+                if ($summary.total_bytes)     { Write-Detail ("  Total bytes    : {0:F2} MiB" -f ($summary.total_bytes / 1MB)) }
             }
         }
         else {
