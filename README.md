@@ -5,6 +5,8 @@
 Interactive backup manager built on [restic](https://restic.net/), designed for Windows 64-bit.  
 A single PowerShell script, a JSON configuration file, and incremental deduplicated backups to multiple destinations simultaneously.
 
+**v2.0.0** – Real-time progress bar, per-backend selection, dry-run backup, snapshot browsing, repository unlock, config validation, restore filters, prune confirmation, and startup banner.
+
 🇫🇷 *[Version française ci-dessous](#version-française)*
 
 ---
@@ -104,11 +106,17 @@ Restic-Manager-Backup\
 
 ### `general` Section
 
-| Key                  | Description                         |
-|----------------------|-------------------------------------|
-| `restic_exe`         | Relative path to `restic.exe`       |
-| `log_dir`            | Log directory                       |
-| `log_retention_days` | Log retention duration (days)       |
+| Key                    | Description                                                                 |
+|------------------------|-----------------------------------------------------------------------------|
+| `restic_exe`           | Relative path to `restic.exe`                                               |
+| `log_dir`              | Log directory                                                               |
+| `log_retention_days`   | Log retention duration (days)                                               |
+| `verbose`              | `true` / `false` – enable verbose output with real-time progress bar        |
+| `compression`          | `"auto"`, `"off"`, or `"max"` – compression mode for backups               |
+| `one_file_system`      | `true` / `false` – stay on one filesystem (no mount-point traversal)        |
+| `tags`                 | Array of default tags applied to every backup (e.g. `["daily", "desktop"]`) |
+| `exclude_caches`       | `true` / `false` – exclude cache directories                               |
+| `exclude_if_present`   | Array of marker filenames (e.g. `[".nobackup"]`) – skip directories containing these files |
 
 ### `sources` Section
 
@@ -221,20 +229,23 @@ The repository will be created at `E:\ResticRepo\` (drive letter assigned automa
 
 ## CLI Menu Usage
 
-At startup, the following menu is displayed:
+At startup, a banner displays the version, enabled backends, and source count. Then the following menu is displayed:
 
 ```
 ============================================================
-   Restic Manager Backup – Multi-backend CLI
+   Restic Manager Backup v2.0.0 – Multi-backend CLI
 ============================================================
   1. Initialize repository
-  2. Run backup (all enabled backends)
+  2. Run backup
   3. List snapshots
   4. Restore backup
   5. Verify repository
   6. Prune repository
   7. Repository statistics
   8. Detect available targets
+  9. Unlock repository
+  10. Browse snapshot contents
+  11. Dry-run backup
   0. Quit
 ============================================================
 ```
@@ -247,10 +258,12 @@ If the repository already exists, this operation is silently skipped.
 
 ### Option 2 – Run backup
 
-Runs an incremental, deduplicated backup to **all enabled backends** sequentially.
+Runs an incremental, deduplicated backup. You can select specific backends or run all enabled backends at once.
+- A real-time **progress bar** shows file count, bytes processed, and the current file being backed up (when `verbose` is enabled).
 - Network backends (S3, Swift, SFTP) are skipped if no network is available.
-- Automatic compression is enabled (`--compression=auto`).
-- A summary is displayed after each backend (new/changed files, data added, duration).
+- Compression mode is configurable via `config.json` (`"auto"`, `"off"`, or `"max"`).
+- An enhanced **per-backend summary table** is displayed after completion (files new/changed, data added, duration, snapshot ID).
+- Elapsed time is shown for each backend.
 
 ### Option 3 – List snapshots
 
@@ -261,6 +274,7 @@ Displays a list of all available snapshots in each enabled backend.
 1. Select the source backend.
 2. Choose the snapshot ID (or `latest`).
 3. Enter the destination directory.
+4. Optionally specify **include/exclude patterns** to restore only specific files or skip certain paths.
 
 ### Option 5 – Verify repository
 
@@ -268,6 +282,7 @@ Runs `restic check` to verify data integrity in each backend.
 
 ### Option 6 – Prune (cleanup)
 
+Displays the current retention policy and asks for **Y/N confirmation** before proceeding.  
 Applies the retention policy defined in `config.json` and removes old unused snapshots/packs.
 
 ### Option 7 – Statistics
@@ -280,6 +295,18 @@ Lists:
 - All local and removable drives (letter, label, type, free/total space)
 - Whether the configured USB drive is present
 - Network availability
+
+### Option 9 – Unlock repository
+
+Removes stale locks from restic repositories. Useful when a previous operation was interrupted and left a lock behind.
+
+### Option 10 – Browse snapshot contents
+
+Lists the files inside a specific snapshot using `restic ls`. Select a backend and snapshot ID to explore its contents.
+
+### Option 11 – Dry-run backup
+
+Simulates a backup without actually writing any data. Shows what files **would** be backed up, allowing you to verify your sources and exclusions before committing.
 
 ---
 
@@ -400,6 +427,8 @@ Recommended measures:
 Gestionnaire de sauvegardes interactif basé sur [restic](https://restic.net/), conçu pour Windows 64 bits.  
 Un seul script PowerShell, un fichier JSON de configuration, des sauvegardes incrémentielles dédupliquées vers plusieurs destinations simultanément.
 
+**v2.0.0** – Barre de progression en temps réel, sélection par backend, dry-run, exploration de snapshots, déverrouillage de dépôt, validation de configuration, filtres de restauration, confirmation de prune et bannière de démarrage.
+
 ---
 
 ## Sommaire
@@ -500,6 +529,12 @@ Restic-Manager-Backup\
 | `restic_exe` | Chemin relatif vers `restic.exe` |
 | `log_dir` | Dossier des logs |
 | `log_retention_days` | Durée de conservation des logs (jours) |
+| `verbose` | `true` / `false` – active la sortie détaillée avec barre de progression en temps réel |
+| `compression` | `"auto"`, `"off"` ou `"max"` – mode de compression des sauvegardes |
+| `one_file_system` | `true` / `false` – rester sur un seul système de fichiers (pas de traversée de points de montage) |
+| `tags` | Tableau de tags par défaut appliqués à chaque backup (ex. `["daily", "desktop"]`) |
+| `exclude_caches` | `true` / `false` – exclure les répertoires de cache |
+| `exclude_if_present` | Tableau de noms de fichiers marqueurs (ex. `[".nobackup"]`) – ignore les dossiers contenant ces fichiers |
 
 ### Section `sources`
 
@@ -612,20 +647,23 @@ Le repository sera créé dans `E:\ResticRepo\` (lettre de lecteur automatique).
 
 ## Utilisation du menu CLI
 
-Au démarrage, le menu suivant s'affiche :
+Au démarrage, une bannière affiche la version, les backends activés et le nombre de sources. Puis le menu suivant s'affiche :
 
 ```
 ============================================================
-   Restic Manager Backup – Multi-backend CLI
+   Restic Manager Backup v2.0.0 – Multi-backend CLI
 ============================================================
   1. Initialize repository
-  2. Run backup (all enabled backends)
+  2. Run backup
   3. List snapshots
   4. Restore backup
   5. Verify repository
   6. Prune repository
   7. Repository statistics
   8. Detect available targets
+  9. Unlock repository
+  10. Browse snapshot contents
+  11. Dry-run backup
   0. Quit
 ============================================================
 ```
@@ -638,10 +676,12 @@ Si le repository existe déjà, cette opération est ignorée sans erreur.
 
 ### Option 2 – Lancer le backup
 
-Lance une sauvegarde incrémentale et dédupliquée vers **tous les backends activés** en séquence.  
-- Les backends réseau (S3, Swift, SFTP) sont ignorés si le réseau n'est pas disponible.  
-- La compression automatique est activée (`--compression=auto`).  
-- Un résumé est affiché après chaque backend (fichiers nouveaux/modifiés, données ajoutées, durée).
+Lance une sauvegarde incrémentale et dédupliquée. Vous pouvez sélectionner des backends spécifiques ou les exécuter tous en une fois.
+- Une **barre de progression** en temps réel affiche le nombre de fichiers, les octets traités et le fichier en cours (lorsque `verbose` est activé).
+- Les backends réseau (S3, Swift, SFTP) sont ignorés si le réseau n'est pas disponible.
+- Le mode de compression est configurable via `config.json` (`"auto"`, `"off"` ou `"max"`).
+- Un **tableau récapitulatif par backend** amélioré est affiché après l'exécution (fichiers nouveaux/modifiés, données ajoutées, durée, ID du snapshot).
+- Le temps écoulé est affiché pour chaque backend.
 
 ### Option 3 – Lister les snapshots
 
@@ -652,6 +692,7 @@ Affiche la liste de tous les snapshots disponibles dans chaque backend activé.
 1. Sélectionner le backend source.  
 2. Choisir l'ID de snapshot (ou `latest`).  
 3. Indiquer le répertoire de destination.
+4. Spécifier éventuellement des **filtres d'inclusion/exclusion** pour ne restaurer que certains fichiers ou ignorer certains chemins.
 
 ### Option 5 – Vérifier le repository
 
@@ -659,6 +700,7 @@ Exécute `restic check` pour s'assurer de l'intégrité des données dans chaque
 
 ### Option 6 – Prune (nettoyage)
 
+Affiche la politique de rétention actuelle et demande une **confirmation Y/N** avant de procéder.  
 Applique la politique de rétention définie dans `config.json` et supprime les anciens snapshots/packs inutilisés.
 
 ### Option 7 – Statistiques
@@ -671,6 +713,18 @@ Liste :
 - Tous les lecteurs locaux et amovibles (lettre, label, type, espace libre/total)
 - La présence ou non de la clé USB configurée
 - La disponibilité du réseau
+
+### Option 9 – Déverrouiller le repository
+
+Supprime les verrous obsolètes des repositories restic. Utile lorsqu'une opération précédente a été interrompue et a laissé un verrou.
+
+### Option 10 – Explorer le contenu d'un snapshot
+
+Liste les fichiers contenus dans un snapshot spécifique via `restic ls`. Sélectionnez un backend et un ID de snapshot pour en explorer le contenu.
+
+### Option 11 – Dry-run (simulation de backup)
+
+Simule une sauvegarde sans écrire de données. Affiche les fichiers qui **seraient** sauvegardés, permettant de vérifier vos sources et exclusions avant de lancer la sauvegarde réelle.
 
 ---
 
