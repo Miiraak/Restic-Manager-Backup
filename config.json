@@ -2,7 +2,13 @@
   "general": {
     "restic_exe": "Restic\\restic.exe",
     "log_dir": "logs",
-    "log_retention_days": 30
+    "log_retention_days": 30,
+    "verbose": true,
+    "compression": "auto",
+    "one_file_system": false,
+    "tags": [],
+    "exclude_caches": true,
+    "exclude_if_present": [".nobackup"]
   },
 
   "sources": [
