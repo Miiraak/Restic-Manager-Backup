@@ -124,7 +124,7 @@ function Test-Config {
     }
 
     # Check sources
-    if (-not $Config.sources -or $Config.sources.Count -eq 0) {
+    if (-not $Config.sources -or @($Config.sources).Count -eq 0) {
         $warnings += "No source paths defined in 'sources' section."
     }
 
@@ -443,7 +443,7 @@ function Invoke-ResticWithProgress {
 
                     # Current file being processed (truncate long paths for display)
                     $maxFileDisplayLen = 60
-                    if ($json.current_files -and $json.current_files.Count -gt 0 -and $null -ne $json.current_files[0]) {
+                    if ($json.current_files -and @($json.current_files).Count -gt 0 -and $null -ne @($json.current_files)[0]) {
                         $lastFile = $json.current_files[0]
                         if ($lastFile.Length -gt $maxFileDisplayLen) {
                             $lastFile = "..." + $lastFile.Substring($lastFile.Length - ($maxFileDisplayLen - 3))
@@ -682,7 +682,7 @@ function Start-Backup {
     $verbose = Get-ConfigValue -Config $Config -Path "general.verbose" -Default $true
 
     # Backend selection
-    $selectedBackends = Select-Backends -Config $Config -Operation "backup"
+    $selectedBackends = @(Select-Backends -Config $Config -Operation "backup")
     if ($selectedBackends.Count -eq 0) { return }
 
     $overallStart = Get-Date
@@ -1086,7 +1086,7 @@ function Show-Targets {
     Write-Header "Detect available targets"
 
     Write-Step "Local / removable drives:"
-    $drives = Detect-LocalTargets
+    $drives = @(Detect-LocalTargets)
     if ($drives.Count -eq 0) {
         Write-Info "No drives detected (may require elevated privileges)."
     }
@@ -1225,8 +1225,8 @@ function Start-DryRunBackup {
     Write-Info "This will show what would be backed up without actually storing any data."
 
     # Build source list
-    $sources = $Config.sources | ForEach-Object { [System.Environment]::ExpandEnvironmentVariables($_) } |
-               Where-Object { Test-Path $_ }
+    $sources = @($Config.sources | ForEach-Object { [System.Environment]::ExpandEnvironmentVariables($_) } |
+               Where-Object { Test-Path $_ })
 
     if ($sources.Count -eq 0) {
         Write-Err "No valid source paths found."
@@ -1362,7 +1362,7 @@ function Show-Banner {
 
     # Show source count
     if ($Config -and $Config.sources) {
-        Write-Info "Source paths configured: $($Config.sources.Count)"
+        Write-Info "Source paths configured: $(@($Config.sources).Count)"
     }
 }
 
