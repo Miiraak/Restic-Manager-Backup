@@ -19,6 +19,7 @@
 #Requires -Version 5.1
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:BackRequested  = $false
 
 # -----------------------------------------------------------------------------
 # Paths
@@ -659,6 +660,7 @@ function Select-Backends {
 
     if ($userChoice -eq "B" -or $userChoice -eq "b") {
         Write-Info "Cancelled."
+        $script:BackRequested = $true
         return @()
     }
 
@@ -700,6 +702,7 @@ function Select-SingleBackend {
 
     if ($userChoice -eq "B" -or $userChoice -eq "b") {
         Write-Info "Cancelled."
+        $script:BackRequested = $true
         return $null
     }
 
@@ -1195,7 +1198,7 @@ function Invoke-Prune {
         switch ($pruneChoice) {
             "1" { Invoke-PruneByPolicy  -Config $Config -ResticExe $ResticExe; return }
             "2" { Remove-Snapshot       -Config $Config -ResticExe $ResticExe; return }
-            "0" { return }
+            "0" { $script:BackRequested = $true; return }
             default {
                 Write-Err "Invalid choice. Please enter 0, 1, or 2."
             }
@@ -1589,7 +1592,7 @@ function Remove-Repository {
         switch ($choice) {
             "1" { Remove-LocalRepository  -Config $Config; return }
             "2" { Remove-RemoteRepository -Config $Config; return }
-            "0" { return }
+            "0" { $script:BackRequested = $true; return }
             default {
                 Write-Err "Invalid choice. Please enter 0, 1, or 2."
             }
@@ -1628,6 +1631,7 @@ function Remove-LocalRepository {
 
         if ($sel -eq "B" -or $sel -eq "b") {
             Write-Info "Cancelled."
+            $script:BackRequested = $true
             return
         }
 
@@ -1722,6 +1726,7 @@ function Remove-RemoteRepository {
 
         if ($sel -eq "B" -or $sel -eq "b") {
             Write-Info "Cancelled."
+            $script:BackRequested = $true
             return
         }
 
@@ -1908,15 +1913,18 @@ function Invoke-OtherMenu {
             "4" { Show-SnapshotContents    -Config $Config -ResticExe $ResticExe }
             "5" { Start-DryRunBackup       -Config $Config -ResticExe $ResticExe }
             "6" { Remove-Repository -Config $Config }
-            "0" { return }
+            "0" { $script:BackRequested = $true; return }
             default {
                 Write-Err "Invalid choice. Please enter a number from 0 to 6."
                 continue
             }
         }
 
-        Write-Host ""
-        Read-Host "Press Enter to continue" | Out-Null
+        if (-not $script:BackRequested) {
+            Write-Host ""
+            Read-Host "Press Enter to continue" | Out-Null
+        }
+        $script:BackRequested = $false
     }
 }
 
@@ -2039,6 +2047,9 @@ while ($true) {
         }
     }
 
-    Write-Host ""
-    Read-Host "Press Enter to return to the menu" | Out-Null
+    if (-not $script:BackRequested) {
+        Write-Host ""
+        Read-Host "Press Enter to return to the menu" | Out-Null
+    }
+    $script:BackRequested = $false
 }
