@@ -9,7 +9,7 @@
     per-backend selection, config validation, and more.
 
 .NOTES
-    Version      : 2.1.0
+    Version      : 2.2.0
     Requirements : restic.exe placed in .\Restic\restic.exe
     Configuration: .\config.json
     Logs         : .\logs\
@@ -25,7 +25,7 @@ $ErrorActionPreference = "Stop"
 # -----------------------------------------------------------------------------
 $ScriptRoot  = $PSScriptRoot
 $ConfigFile  = Join-Path $ScriptRoot "config.json"
-$ScriptVersion = "2.1.0"
+$ScriptVersion = "2.2.0"
 
 # -----------------------------------------------------------------------------
 # Helper - colored output
@@ -66,6 +66,85 @@ function Write-Warn {
 function Write-Detail {
     param([string]$Text)
     Write-Host "    $Text" -ForegroundColor DarkGray
+}
+
+# -----------------------------------------------------------------------------
+# Helper - ASCII progress bar (in-place, colored)
+# -----------------------------------------------------------------------------
+function Write-AsciiProgress {
+    param(
+        [string] $Activity,
+        [double] $PercentComplete,
+        [string] $Status,
+        [switch] $Completed
+    )
+
+    $width = 120
+    try { $width = [Console]::BufferWidth } catch {}
+    $maxLen = $width - 1   # leave 1-char margin to avoid line wrap
+
+    if ($Completed) {
+        Write-Host ("`r" + (" " * $maxLen)) -NoNewline
+        Write-Host "`r" -NoNewline
+        return
+    }
+
+    $barWidth = 30
+    $pct = [math]::Max(0, [math]::Min(100, $PercentComplete))
+    $filled = [int][math]::Floor($pct / 100 * $barWidth)
+    $empty  = $barWidth - $filled
+
+    # Build bar segments
+    if ($filled -gt 0 -and $empty -gt 0) {
+        $barFilled = ("=" * ($filled - 1)) + ">"
+        $barEmpty  = ("-" * $empty)
+    }
+    elseif ($filled -ge $barWidth) {
+        $barFilled = "=" * $barWidth
+        $barEmpty  = ""
+    }
+    else {
+        $barFilled = ""
+        $barEmpty  = "-" * $barWidth
+    }
+
+    $pctStr = "{0,5:F1}%" -f $pct
+
+    # Truncate status so the full line fits inside the console width
+    # Fixed parts: "  " + Activity + " [" + bar + "] " + pctStr + "  " + Status
+    $fixedLen = 2 + $Activity.Length + 2 + $barWidth + 2 + $pctStr.Length + 2
+    $maxStatus = $maxLen - $fixedLen
+    if ($maxStatus -lt 0) { $maxStatus = 0 }
+    if ($Status.Length -gt $maxStatus) {
+        if ($maxStatus -gt 3) {
+            $Status = "..." + $Status.Substring($Status.Length - ($maxStatus - 3))
+        }
+        else {
+            $Status = $Status.Substring(0, $maxStatus)
+        }
+    }
+
+    # Compose and pad
+    $line = "  $Activity [$barFilled$barEmpty] $pctStr  $Status"
+    if ($line.Length -lt $maxLen) { $line = $line.PadRight($maxLen) }
+    if ($line.Length -gt $maxLen) { $line = $line.Substring(0, $maxLen) }
+
+    # Write the bar with colors via individual segments
+    Write-Host "`r" -NoNewline
+    Write-Host "  " -NoNewline
+    Write-Host $Activity -ForegroundColor Cyan -NoNewline
+    Write-Host " [" -NoNewline
+    if ($barFilled) { Write-Host $barFilled -ForegroundColor Green -NoNewline }
+    if ($barEmpty)  { Write-Host $barEmpty  -ForegroundColor DarkGray -NoNewline }
+    Write-Host "] " -NoNewline
+    Write-Host $pctStr -ForegroundColor Yellow -NoNewline
+    Write-Host "  " -NoNewline
+    Write-Host $Status -ForegroundColor Gray -NoNewline
+
+    # Pad remainder to overwrite any leftover characters from previous longer line
+    $usedLen = 2 + $Activity.Length + 2 + $barFilled.Length + $barEmpty.Length + 2 + $pctStr.Length + 2 + $Status.Length
+    $pad = $maxLen - $usedLen
+    if ($pad -gt 0) { Write-Host (" " * $pad) -NoNewline }
 }
 
 # -----------------------------------------------------------------------------
@@ -437,7 +516,7 @@ function Invoke-ResticWithProgress {
         $process.BeginErrorReadLine()
 
         # Read stdout line by line for JSON status.
-        # Throttle Write-Progress to reduce overhead (restic emits status very frequently).
+        # Throttle progress bar to reduce overhead (restic emits status very frequently).
         $progressSw = [System.Diagnostics.Stopwatch]::StartNew()
         $progressIntervalMs = 250
 
@@ -458,35 +537,39 @@ function Invoke-ResticWithProgress {
                     if ($progressSw.ElapsedMilliseconds -lt $progressIntervalMs) { continue }
                     $progressSw.Restart()
 
+                    # Percentage: prefer restic-provided percent_done (0..1), fall back to bytes or files ratio
                     $pctDone = 0
-                    if ($json.total_bytes -and $json.total_bytes -gt 0) {
-                        $pctDone = [math]::Min(100, [math]::Round(($json.bytes_done / $json.total_bytes) * 100, 1))
+                    if ($json.percent_done) {
+                        $pctDone = [math]::Min(100, [math]::Round($json.percent_done * 100, 1))
+                    }
+                    elseif ($json.total_bytes -and $json.total_bytes -gt 0) {
+                        $done = if ($json.bytes_done) { $json.bytes_done } elseif ($json.bytes_restored) { $json.bytes_restored } else { 0 }
+                        $pctDone = [math]::Min(100, [math]::Round(($done / $json.total_bytes) * 100, 1))
                     }
                     elseif ($json.total_files -and $json.total_files -gt 0) {
-                        $pctDone = [math]::Min(100, [math]::Round(($json.files_done / $json.total_files) * 100, 1))
+                        $done = if ($json.files_done) { $json.files_done } elseif ($json.files_restored) { $json.files_restored } else { 0 }
+                        $pctDone = [math]::Min(100, [math]::Round(($done / $json.total_files) * 100, 1))
                     }
 
-                    # Current file being processed (truncate long paths for display)
-                    $maxFileDisplayLen = 60
+                    # Current file being processed (backup only)
                     $currentFiles = @($json.current_files)
                     if ($currentFiles -and $currentFiles.Count -gt 0 -and $null -ne $currentFiles[0]) {
                         $lastFile = $currentFiles[0]
-                        if ($lastFile.Length -gt $maxFileDisplayLen) {
-                            $lastFile = "..." + $lastFile.Substring($lastFile.Length - ($maxFileDisplayLen - 3))
-                        }
                     }
 
-                    $filesDone  = if ($json.files_done)  { $json.files_done }  else { 0 }
-                    $totalFiles = if ($json.total_files)  { $json.total_files } else { 0 }
-                    $bytesDone  = if ($json.bytes_done)   { $json.bytes_done }  else { 0 }
+                    # File counts: backup uses files_done, restore uses files_restored
+                    $filesDone  = if ($json.files_done) { $json.files_done } elseif ($json.files_restored) { $json.files_restored } else { 0 }
+                    $totalFiles = if ($json.total_files) { $json.total_files } else { 0 }
+                    $bytesDone  = if ($json.bytes_done)  { $json.bytes_done } elseif ($json.bytes_restored) { $json.bytes_restored } else { 0 }
 
                     $bytesDoneMB = [math]::Round($bytesDone / 1MB, 1)
 
-                    $statusText = "[$BackendName] Files: $filesDone/$totalFiles | ${bytesDoneMB} MiB | $lastFile"
+                    $statusText = "[$BackendName] Files: $filesDone/$totalFiles | ${bytesDoneMB} MiB"
+                    if ($lastFile) { $statusText += " | $lastFile" }
 
-                    Write-Progress -Activity $ActivityName `
-                                   -Status $statusText `
-                                   -PercentComplete ([math]::Min(100, [math]::Max(0, $pctDone)))
+                    Write-AsciiProgress -Activity $ActivityName `
+                                        -PercentComplete $pctDone `
+                                        -Status $statusText
                 }
                 elseif ($json.message_type -eq "summary") {
                     $summary = $json
@@ -525,7 +608,8 @@ function Invoke-ResticWithProgress {
 
         Remove-Item Env:\RESTIC_REPOSITORY -ErrorAction SilentlyContinue
         Remove-Item Env:\RESTIC_PASSWORD   -ErrorAction SilentlyContinue
-        Write-Progress -Activity $ActivityName -Completed
+        Write-AsciiProgress -Activity $ActivityName -Completed
+        Write-Host ""   # move to new line after the progress bar
     }
 
     return [PSCustomObject]@{
@@ -998,10 +1082,41 @@ function Restore-Backup {
         Write-Step "Restoring snapshot '$snapshotId' to '$restorePath'..."
         Write-Log "Restoring [$name] snapshot $snapshotId to $restorePath"
 
-        $restoreArgs = @("restore", $snapshotId, "--target", $restorePath) + $filterArgs
-        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
-                      -Password $backend.password `
-                      -Arguments $restoreArgs
+        $restoreArgs = @("restore", $snapshotId, "--target", $restorePath, "--json") + $filterArgs
+
+        $result = Invoke-ResticWithProgress -ResticExe $ResticExe -Repository $repo `
+                                            -Password $backend.password `
+                                            -Arguments $restoreArgs `
+                                            -BackendName $name `
+                                            -ActivityName "Restore from $name"
+
+        if ($result.ExitCode -eq 0) {
+            Write-OK "Restore completed successfully."
+            Write-Log "[$name] restore OK" "INFO"
+
+            $summary = $result.Summary
+            if (-not $summary -and $result.Output) {
+                foreach ($line in $result.Output) {
+                    if ($line -match '"message_type"\s*:\s*"summary"') {
+                        try { $summary = $line | ConvertFrom-Json } catch {}
+                    }
+                }
+            }
+            if ($summary) {
+                Write-Host ""
+                Write-Host "  Restore Summary for [$name]:" -ForegroundColor Green
+                $filesRestored = if ($summary.files_restored)  { $summary.files_restored } else { $summary.total_files }
+                $bytesRestored = if ($summary.bytes_restored)   { $summary.bytes_restored } else { $summary.total_bytes }
+                if ($filesRestored) { Write-Detail ("  Files restored : {0}" -f $filesRestored) }
+                if ($bytesRestored) { Write-Detail ("  Bytes restored : {0:F2} MiB" -f ($bytesRestored / 1MB)) }
+            }
+        }
+        else {
+            Write-Err "Restore failed (exit $($result.ExitCode))."
+            $lastLine = if ($result.Output) { ($result.Output | Select-Object -Last 1).ToString() } else { "(no output)" }
+            Write-Err $lastLine
+            Write-Log "[$name] restore failed (exit $($result.ExitCode)): $lastLine" "ERROR"
+        }
     }
     finally {
         Clear-BackendEnv -Backend $backend

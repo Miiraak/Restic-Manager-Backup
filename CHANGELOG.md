@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2.0] - 2026-03-09
+
+### Added
+- **Restore progress bar**: `Restore-Backup` now displays real-time progress via `Invoke-ResticWithProgress` with `--json` output, including a restore summary on completion
+- **ASCII progress bar** (`Write-AsciiProgress`): new colored, in-place console progress bar using pure ASCII characters (`[===>----]`), replacing the native `Write-Progress` cmdlet across all operations (backup, dry-run, restore)
+
+### Changed
+- `Invoke-ResticWithProgress` now uses `Write-AsciiProgress` instead of `Write-Progress` for a consistent look across all terminal hosts
+- `Invoke-ResticWithProgress` generalised to handle both backup and restore JSON status fields (`files_done`/`bytes_done` and `files_restored`/`bytes_restored`, plus `percent_done`)
+
+---
+
 ## [2.1.0] - 2026-03-09
 
 ### Changed
