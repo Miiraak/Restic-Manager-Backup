@@ -1057,22 +1057,24 @@ function Test-Repository {
 function Invoke-Prune {
     param($Config, [string]$ResticExe)
 
-    Write-Header "Prune repository"
+    while ($true) {
+        Write-Header "Prune repository"
 
-    Write-Host ""
-    Write-Host "  Prune options:" -ForegroundColor White
-    Write-Host "  1. Prune by retention policy"     -ForegroundColor White
-    Write-Host "  2. Delete specific snapshot(s)"    -ForegroundColor White
-    Write-Host "  0. Back"                           -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Prune options:" -ForegroundColor White
+        Write-Host "  1. Prune by retention policy"     -ForegroundColor White
+        Write-Host "  2. Delete specific snapshot"       -ForegroundColor White
+        Write-Host "  0. Back"                           -ForegroundColor DarkGray
 
-    $pruneChoice = Read-Host "  Your choice"
+        $pruneChoice = Read-Host "  Your choice"
 
-    switch ($pruneChoice) {
-        "1" { Invoke-PruneByPolicy  -Config $Config -ResticExe $ResticExe }
-        "2" { Remove-Snapshot       -Config $Config -ResticExe $ResticExe }
-        "0" { return }
-        default {
-            Write-Err "Invalid choice."
+        switch ($pruneChoice) {
+            "1" { Invoke-PruneByPolicy  -Config $Config -ResticExe $ResticExe; return }
+            "2" { Remove-Snapshot       -Config $Config -ResticExe $ResticExe; return }
+            "0" { return }
+            default {
+                Write-Err "Invalid choice. Please enter 0, 1, or 2."
+            }
         }
     }
 }
@@ -1144,13 +1146,15 @@ function Invoke-PruneByPolicy {
 function Remove-Snapshot {
     param($Config, [string]$ResticExe)
 
-    Write-Header "Delete specific snapshot(s)"
+    Write-Header "Delete specific snapshot"
 
     $selected = Select-SingleBackend -Config $Config -Operation "delete snapshot"
     if (-not $selected) { return }
 
     $name    = $selected.Name
     $backend = $selected.Value
+
+    if (-not (Test-BackendNetwork -Name $name)) { return }
 
     $repo = Resolve-Repository -BackendName $name -Backend $backend
     if (-not $repo) { return }
@@ -1489,7 +1493,7 @@ function Remove-ResticInstallation {
     if ($removeLogs -eq "y" -or $removeLogs -eq "Y") {
         if (Test-Path $logDir) {
             try {
-                Remove-Item -Path $logDir -Recurse -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $logDir -Recurse -Force -ErrorAction Stop
                 Write-OK "Removed log folder: $logDir"
             }
             catch {
