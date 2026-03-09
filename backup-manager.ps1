@@ -408,11 +408,12 @@ function Invoke-ResticWithProgress {
                         $pctDone = [math]::Min(100, [math]::Round(($json.files_done / $json.total_files) * 100, 1))
                     }
 
-                    # Current file being processed
+                    # Current file being processed (truncate long paths for display)
+                    $maxFileDisplayLen = 60
                     if ($json.current_files -and $json.current_files.Count -gt 0 -and $null -ne $json.current_files[0]) {
                         $lastFile = $json.current_files[0]
-                        if ($lastFile.Length -gt 60) {
-                            $lastFile = "..." + $lastFile.Substring($lastFile.Length - 57)
+                        if ($lastFile.Length -gt $maxFileDisplayLen) {
+                            $lastFile = "..." + $lastFile.Substring($lastFile.Length - ($maxFileDisplayLen - 3))
                         }
                     }
 
@@ -731,8 +732,9 @@ function Start-Backup {
                     DataAdded  = "{0:F2} MiB" -f ($summary.data_added / 1MB)
                     Duration   = "{0:F1} s" -f $summary.total_duration
                     SnapshotID = $(
+                        $snapshotDisplayLen = 8
                         if ($summary.snapshot_id) {
-                            $summary.snapshot_id.Substring(0, [math]::Min(8, $summary.snapshot_id.Length))
+                            $summary.snapshot_id.Substring(0, [math]::Min($snapshotDisplayLen, $summary.snapshot_id.Length))
                         } else { "N/A" }
                     )
                 }
