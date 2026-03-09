@@ -344,7 +344,7 @@ function Invoke-Restic {
             $exit   = $LASTEXITCODE
         }
         else {
-            & $ResticExe @Arguments
+            & $ResticExe @Arguments | Out-Host
             $exit = $LASTEXITCODE
         }
     }
@@ -408,8 +408,9 @@ function Invoke-ResticWithProgress {
 
         # Drain stderr concurrently to prevent buffer-full deadlock
         $stderrBuilder = New-Object System.Text.StringBuilder
-        $stderrEvent = Register-ObjectEvent -InputObject $process `
-            -EventName ErrorDataReceived -Action {
+        $stderrSourceId = "ResticStderr_$([guid]::NewGuid().ToString('N'))"
+        $stderrJob = Register-ObjectEvent -InputObject $process `
+            -EventName ErrorDataReceived -SourceIdentifier $stderrSourceId -Action {
                 if ($null -ne $EventArgs.Data) {
                     [void]$Event.MessageData.AppendLine($EventArgs.Data)
                 }
@@ -482,11 +483,11 @@ function Invoke-ResticWithProgress {
     }
     finally {
         # Clean up stderr event handler and background job
-        if ($stderrEvent) {
-            Unregister-Event -SubscriptionId $stderrEvent.SubscriptionId -Force -ErrorAction SilentlyContinue
-            if ($stderrEvent.Action) {
-                Remove-Job -Id $stderrEvent.Action.Id -Force -ErrorAction SilentlyContinue
-            }
+        if ($stderrSourceId) {
+            Unregister-Event -SourceIdentifier $stderrSourceId -Force -ErrorAction SilentlyContinue
+        }
+        if ($stderrJob) {
+            Remove-Job -Id $stderrJob.Id -Force -ErrorAction SilentlyContinue
         }
 
         # Collect any stderr output that was captured asynchronously
