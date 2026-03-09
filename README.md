@@ -233,7 +233,7 @@ At startup, a banner displays the version, enabled backends, and source count. T
 
 ```
 ============================================================
-   Restic Manager Backup v2.0.0 – Multi-backend CLI
+   Restic Manager Backup - Multi-backend CLI
 ============================================================
   1. Initialize repository
   2. Run backup
@@ -651,7 +651,7 @@ Au démarrage, une bannière affiche la version, les backends activés et le nom
 
 ```
 ============================================================
-   Restic Manager Backup v2.0.0 – Multi-backend CLI
+   Restic Manager Backup - Multi-backend CLI
 ============================================================
   1. Initialize repository
   2. Run backup

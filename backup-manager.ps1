@@ -110,15 +110,16 @@ function Load-Config {
 function Test-Config {
     param($Config)
 
+    $errors   = @()
     $warnings = @()
 
-    # Check general section
+    # Check general section (critical)
     if (-not $Config.general) {
-        $warnings += "Missing 'general' section in config.json."
+        $errors += "Missing 'general' section in config.json."
     }
     else {
-        if (-not $Config.general.restic_exe) { $warnings += "Missing 'general.restic_exe' field." }
-        if (-not $Config.general.log_dir)    { $warnings += "Missing 'general.log_dir' field." }
+        if (-not $Config.general.restic_exe) { $errors += "Missing 'general.restic_exe' field." }
+        if (-not $Config.general.log_dir)    { $errors += "Missing 'general.log_dir' field." }
         if ($null -eq $Config.general.log_retention_days) { $warnings += "Missing 'general.log_retention_days' field." }
     }
 
@@ -138,9 +139,9 @@ function Test-Config {
         }
     }
 
-    # Check backends
+    # Check backends (critical)
     if (-not $Config.backends) {
-        $warnings += "Missing 'backends' section."
+        $errors += "Missing 'backends' section."
     }
     else {
         $enabledCount = 0
@@ -162,6 +163,15 @@ function Test-Config {
         if ($enabledCount -eq 0) { $warnings += "No backends are enabled. Enable at least one backend." }
     }
 
+    # Show errors
+    if ($errors.Count -gt 0) {
+        Write-Err "Configuration errors (cannot continue):"
+        foreach ($e in $errors) {
+            Write-Detail "- $e"
+        }
+        Write-Host ""
+    }
+
     # Show warnings
     if ($warnings.Count -gt 0) {
         Write-Warn "Configuration warnings:"
@@ -171,7 +181,7 @@ function Test-Config {
         Write-Host ""
     }
 
-    return $warnings.Count -eq 0
+    return $errors.Count -eq 0
 }
 
 # -----------------------------------------------------------------------------
@@ -350,6 +360,17 @@ function Invoke-Restic {
 # -----------------------------------------------------------------------------
 # Restic command executor with real-time progress bar
 # -----------------------------------------------------------------------------
+function ConvertTo-EscapedArg {
+    <#
+    .SYNOPSIS Escapes a single argument for use in ProcessStartInfo.Arguments.
+    #>
+    param([string]$Arg)
+    if ($Arg -eq "") { return '""' }
+    if ($Arg -notmatch '[\s"]') { return $Arg }
+    # Escape embedded double-quotes and wrap in double-quotes
+    return '"' + ($Arg -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+}
+
 function Invoke-ResticWithProgress {
     param(
         [string]   $ResticExe,
@@ -371,9 +392,7 @@ function Invoke-ResticWithProgress {
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName               = $ResticExe
-        $psi.Arguments              = ($Arguments | ForEach-Object {
-            if ($_ -match '\s') { "`"$_`"" } else { $_ }
-        }) -join " "
+        $psi.Arguments              = ($Arguments | ForEach-Object { ConvertTo-EscapedArg $_ }) -join " "
         $psi.UseShellExecute        = $false
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError  = $true
@@ -385,7 +404,19 @@ function Invoke-ResticWithProgress {
 
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $psi
+        $process.EnableRaisingEvents = $true
+
+        # Drain stderr concurrently to prevent buffer-full deadlock
+        $stderrBuilder = New-Object System.Text.StringBuilder
+        $stderrEvent = Register-ObjectEvent -InputObject $process `
+            -EventName ErrorDataReceived -Action {
+                if ($null -ne $EventArgs.Data) {
+                    [void]$Event.MessageData.AppendLine($EventArgs.Data)
+                }
+            } -MessageData $stderrBuilder
+
         $process.Start() | Out-Null
+        $process.BeginErrorReadLine()
 
         # Read stdout line by line for JSON status
         while (-not $process.StandardOutput.EndOfStream) {
@@ -438,12 +469,13 @@ function Invoke-ResticWithProgress {
             }
         }
 
-        # Read any remaining stderr
-        $stderr = $process.StandardError.ReadToEnd()
-        if ($stderr) { $allOutput += $stderr }
-
         $process.WaitForExit()
         $exitCode = $process.ExitCode
+
+        # Collect any stderr output that was captured asynchronously
+        Unregister-Event -SourceIdentifier $stderrEvent.Name -ErrorAction SilentlyContinue
+        $stderrText = $stderrBuilder.ToString()
+        if ($stderrText) { $allOutput += $stderrText }
     }
     finally {
         Remove-Item Env:\RESTIC_REPOSITORY -ErrorAction SilentlyContinue
@@ -484,14 +516,14 @@ function Select-Backends {
         $i++
     }
 
-    $input = Read-Host "  Your choice (A or number)"
+    $userChoice = Read-Host "  Your choice (A or number)"
 
-    if ($input -eq "A" -or $input -eq "a" -or $input -eq "") {
+    if ($userChoice -eq "A" -or $userChoice -eq "a" -or $userChoice -eq "") {
         return $enabledList
     }
 
     [int]$choiceNumber = 0
-    if ([int]::TryParse($input, [ref]$choiceNumber) -and $choiceNumber -ge 1 -and $choiceNumber -le $enabledList.Count) {
+    if ([int]::TryParse($userChoice, [ref]$choiceNumber) -and $choiceNumber -ge 1 -and $choiceNumber -le $enabledList.Count) {
         return @($enabledList[$choiceNumber - 1])
     }
 
@@ -1297,18 +1329,23 @@ function Show-Banner {
 
     # Show enabled backends
     $enabled = @()
-    $Config.backends.PSObject.Properties | ForEach-Object {
-        if ($_.Value.enabled) { $enabled += "$($_.Name)" }
-    }
-    if ($enabled.Count -gt 0) {
-        Write-Info "Enabled backends: $($enabled -join ', ')"
+    if ($Config -and $Config.backends -and $Config.backends.PSObject -and $Config.backends.PSObject.Properties) {
+        $Config.backends.PSObject.Properties | ForEach-Object {
+            if ($_.Value -and $_.Value.enabled) { $enabled += "$($_.Name)" }
+        }
+        if ($enabled.Count -gt 0) {
+            Write-Info "Enabled backends: $($enabled -join ', ')"
+        }
+        else {
+            Write-Warn "No backends are enabled."
+        }
     }
     else {
-        Write-Warn "No backends are enabled."
+        Write-Warn "Backends configuration is missing or invalid."
     }
 
     # Show source count
-    if ($Config.sources) {
+    if ($Config -and $Config.sources) {
         Write-Info "Source paths configured: $($Config.sources.Count)"
     }
 }
@@ -1345,7 +1382,11 @@ $LogDir    = Join-Path $ScriptRoot $Config.general.log_dir
 Initialize-Log -LogDir $LogDir
 
 # Validate config
-Test-Config -Config $Config | Out-Null
+$configValid = Test-Config -Config $Config
+if (-not $configValid) {
+    Write-Err "Cannot start due to configuration errors. Please fix config.json and try again."
+    exit 1
+}
 
 # Show startup banner
 Show-Banner -Config $Config
