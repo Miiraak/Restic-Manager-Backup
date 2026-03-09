@@ -52,4 +52,5 @@ We will acknowledge receipt and work on a fix as soon as possible.
 
 | Version | Supported |
 |---------|-----------|
+| 2.0.x   | ✅        |
 | 1.0.x   | ✅        |
