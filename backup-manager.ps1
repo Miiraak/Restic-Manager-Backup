@@ -560,8 +560,14 @@ function Select-Backends {
         Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
         $i++
     }
+    Write-Host "  [B] Back" -ForegroundColor DarkGray
 
-    $userChoice = Read-Host "  Your choice (A or number)"
+    $userChoice = Read-Host "  Your choice (A, number, or B to go back)"
+
+    if ($userChoice -eq "B" -or $userChoice -eq "b") {
+        Write-Info "Cancelled."
+        return @()
+    }
 
     if ($userChoice -eq "A" -or $userChoice -eq "a" -or $userChoice -eq "") {
         return $enabledList
@@ -596,7 +602,13 @@ function Select-SingleBackend {
         Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
         $i++
     }
-    $userChoice = Read-Host "  Your choice"
+    Write-Host "  [B] Back" -ForegroundColor DarkGray
+    $userChoice = Read-Host "  Your choice (number or B to go back)"
+
+    if ($userChoice -eq "B" -or $userChoice -eq "b") {
+        Write-Info "Cancelled."
+        return $null
+    }
 
     [int]$choiceNumber = 0
     if ([int]::TryParse($userChoice, [ref]$choiceNumber) -and $choiceNumber -ge 1 -and $choiceNumber -le $enabledList.Count) {
@@ -957,8 +969,13 @@ function Restore-Backup {
         Invoke-Restic -ResticExe $ResticExe -Repository $repo `
                       -Password $backend.password -Arguments @("snapshots")
 
-        $snapshotId  = Read-Host "Enter snapshot ID to restore (or 'latest')"
-        $restorePath = Read-Host "Enter restore destination path"
+        $snapshotId  = Read-Host "Enter snapshot ID to restore, 'latest', or leave empty to cancel"
+        if ([string]::IsNullOrWhiteSpace($snapshotId)) {
+            Write-Info "Restore cancelled."
+            return
+        }
+
+        $restorePath = Read-Host "Enter restore destination path (or leave empty to cancel)"
 
         if ([string]::IsNullOrWhiteSpace($restorePath)) {
             Write-Err "Restore path cannot be empty."
@@ -1035,12 +1052,35 @@ function Test-Repository {
 }
 
 # -----------------------------------------------------------------------------
-# 6. Prune repository (with confirmation)
+# 6. Prune repository (with sub-menu)
 # -----------------------------------------------------------------------------
 function Invoke-Prune {
     param($Config, [string]$ResticExe)
 
-    Write-Header "Prune repository"
+    while ($true) {
+        Write-Header "Prune repository"
+
+        Write-Host ""
+        Write-Host "  Prune options:" -ForegroundColor White
+        Write-Host "  1. Prune by retention policy"     -ForegroundColor White
+        Write-Host "  2. Delete specific snapshot"       -ForegroundColor White
+        Write-Host "  0. Back"                           -ForegroundColor DarkGray
+
+        $pruneChoice = Read-Host "  Your choice"
+
+        switch ($pruneChoice) {
+            "1" { Invoke-PruneByPolicy  -Config $Config -ResticExe $ResticExe; return }
+            "2" { Remove-Snapshot       -Config $Config -ResticExe $ResticExe; return }
+            "0" { return }
+            default {
+                Write-Err "Invalid choice. Please enter 0, 1, or 2."
+            }
+        }
+    }
+}
+
+function Invoke-PruneByPolicy {
+    param($Config, [string]$ResticExe)
 
     $ret = $Config.retention
 
@@ -1100,6 +1140,63 @@ function Invoke-Prune {
             Write-Err "[$name] prune failed (exit $exit)."
             Write-Log "[$name] prune failed" "ERROR"
         }
+    }
+}
+
+function Remove-Snapshot {
+    param($Config, [string]$ResticExe)
+
+    Write-Header "Delete specific snapshot"
+
+    $selected = Select-SingleBackend -Config $Config -Operation "delete snapshot"
+    if (-not $selected) { return }
+
+    $name    = $selected.Name
+    $backend = $selected.Value
+
+    if (-not (Test-BackendNetwork -Name $name)) { return }
+
+    $repo = Resolve-Repository -BackendName $name -Backend $backend
+    if (-not $repo) { return }
+
+    Set-BackendEnv -Backend $backend
+    try {
+        Write-Step "Listing snapshots for [$name]..."
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                      -Password $backend.password -Arguments @("snapshots")
+
+        Write-Host ""
+        $snapshotId = Read-Host "Enter snapshot ID to delete (or leave empty to cancel)"
+        if ([string]::IsNullOrWhiteSpace($snapshotId)) {
+            Write-Info "Delete cancelled."
+            return
+        }
+
+        Write-Warn "This will permanently delete snapshot '$snapshotId' and prune unreferenced data."
+        $confirm = Read-Host "Are you sure? (y/N)"
+        if ($confirm -ne "y" -and $confirm -ne "Y") {
+            Write-Info "Delete cancelled."
+            return
+        }
+
+        Write-Step "Deleting snapshot '$snapshotId' from [$name]..."
+        Write-Log "Deleting snapshot $snapshotId from [$name]"
+
+        $exit = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                              -Password $backend.password `
+                              -Arguments @("forget", $snapshotId, "--prune")
+
+        if ($exit -eq 0) {
+            Write-OK "[$name] snapshot '$snapshotId' deleted."
+            Write-Log "[$name] snapshot $snapshotId deleted OK" "INFO"
+        }
+        else {
+            Write-Err "[$name] failed to delete snapshot (exit $exit)."
+            Write-Log "[$name] snapshot $snapshotId delete failed" "ERROR"
+        }
+    }
+    finally {
+        Clear-BackendEnv -Backend $backend
     }
 }
 
@@ -1244,7 +1341,11 @@ function Show-SnapshotContents {
         Invoke-Restic -ResticExe $ResticExe -Repository $repo `
                       -Password $backend.password -Arguments @("snapshots")
 
-        $snapshotId = Read-Host "Enter snapshot ID to browse (or 'latest')"
+        $snapshotId = Read-Host "Enter snapshot ID to browse, 'latest', or leave empty to cancel"
+        if ([string]::IsNullOrWhiteSpace($snapshotId)) {
+            Write-Info "Browse cancelled."
+            return
+        }
 
         Write-Step "Listing files in snapshot '$snapshotId'..."
         Write-Log "Browsing [$name] snapshot $snapshotId"
@@ -1345,6 +1446,114 @@ function Start-DryRunBackup {
 }
 
 # -----------------------------------------------------------------------------
+# Remove restic installation
+# -----------------------------------------------------------------------------
+function Remove-ResticInstallation {
+    param($Config)
+
+    Write-Header "Remove restic installation"
+
+    $resticDir = Join-Path $ScriptRoot "Restic"
+    $logDir    = Join-Path $ScriptRoot $Config.general.log_dir
+
+    Write-Info "This will remove the restic binary from the local Restic folder."
+    Write-Detail "  Restic folder : $resticDir"
+    Write-Detail "  Log folder    : $logDir"
+    Write-Host ""
+    Write-Warn "Repository data on remote/local backends will NOT be affected."
+    Write-Host ""
+
+    $confirm = Read-Host "Remove restic binary? (y/N)"
+    if ($confirm -ne "y" -and $confirm -ne "Y") {
+        Write-Info "Removal cancelled."
+        return
+    }
+
+    # Remove restic binary
+    if (Test-Path $resticDir) {
+        $exeFiles = @(Get-ChildItem -Path $resticDir -Filter "restic*" -File -ErrorAction SilentlyContinue)
+        foreach ($f in $exeFiles) {
+            try {
+                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
+                Write-OK "Removed: $($f.FullName)"
+                Write-Log "Removed restic file: $($f.FullName)" "INFO"
+            }
+            catch {
+                Write-Err "Failed to remove $($f.FullName): $_"
+                Write-Log "Failed to remove $($f.FullName): $_" "ERROR"
+            }
+        }
+    }
+    else {
+        Write-Info "Restic folder not found - nothing to remove."
+    }
+
+    # Optionally remove logs
+    $removeLogs = Read-Host "Also remove log files? (y/N)"
+    if ($removeLogs -eq "y" -or $removeLogs -eq "Y") {
+        if (Test-Path $logDir) {
+            try {
+                Remove-Item -LiteralPath $logDir -Recurse -Force -ErrorAction Stop
+                Write-OK "Removed log folder: $logDir"
+            }
+            catch {
+                Write-Err "Failed to remove log folder: $_"
+            }
+        }
+        else {
+            Write-Info "Log folder not found - nothing to remove."
+        }
+    }
+
+    Write-OK "Restic removal complete."
+    Write-Info "Repository data on backends has not been modified."
+}
+
+# -----------------------------------------------------------------------------
+# Other options sub-menu
+# -----------------------------------------------------------------------------
+function Show-OtherMenu {
+    Write-Host ""
+    Write-Host ("=" * 60) -ForegroundColor Cyan
+    Write-Host "   Other Options" -ForegroundColor Cyan
+    Write-Host ("=" * 60) -ForegroundColor Cyan
+    Write-Host "  1.  Initialize repository"               -ForegroundColor White
+    Write-Host "  2.  Detect available targets"            -ForegroundColor White
+    Write-Host "  3.  Unlock repository"                   -ForegroundColor White
+    Write-Host "  4.  Browse snapshot contents"            -ForegroundColor White
+    Write-Host "  5.  Dry-run backup (preview)"            -ForegroundColor White
+    Write-Host "  6.  Remove restic installation"          -ForegroundColor White
+    Write-Host "  0.  Back to main menu"                   -ForegroundColor DarkGray
+    Write-Host ("=" * 60) -ForegroundColor Cyan
+}
+
+function Invoke-OtherMenu {
+    param($Config, [string]$ResticExe)
+
+    while ($true) {
+        Show-OtherMenu
+        $otherChoice = Read-Host "Enter your choice"
+
+        switch ($otherChoice) {
+            "1" { Initialize-Repository    -Config $Config -ResticExe $ResticExe }
+            "2" { Show-Targets             -Config $Config }
+            "3" { Unlock-Repository        -Config $Config -ResticExe $ResticExe }
+            "4" { Show-SnapshotContents    -Config $Config -ResticExe $ResticExe }
+            "5" { Start-DryRunBackup       -Config $Config -ResticExe $ResticExe }
+            "6" { Remove-ResticInstallation -Config $Config }
+            "0" { return }
+            default {
+                Write-Err "Invalid choice. Please enter a number from 0 to 6."
+                continue
+            }
+        }
+
+        Write-Host ""
+        Read-Host "Press Enter to continue" | Out-Null
+    }
+}
+
+# -----------------------------------------------------------------------------
 # Purge old log files
 # -----------------------------------------------------------------------------
 function Remove-OldLogs {
@@ -1405,17 +1614,13 @@ function Show-Menu {
     Write-Host ("=" * 60) -ForegroundColor Cyan
     Write-Host "   Restic Manager Backup - Multi-backend CLI" -ForegroundColor Cyan
     Write-Host ("=" * 60) -ForegroundColor Cyan
-    Write-Host "  1.  Initialize repository"               -ForegroundColor White
-    Write-Host "  2.  Run backup"                          -ForegroundColor White
-    Write-Host "  3.  List snapshots"                      -ForegroundColor White
-    Write-Host "  4.  Restore backup"                      -ForegroundColor White
+    Write-Host "  1.  Run backup"                          -ForegroundColor White
+    Write-Host "  2.  List snapshots"                      -ForegroundColor White
+    Write-Host "  3.  Restore backup"                      -ForegroundColor White
+    Write-Host "  4.  Prune repository"                    -ForegroundColor White
     Write-Host "  5.  Verify repository"                   -ForegroundColor White
-    Write-Host "  6.  Prune repository"                    -ForegroundColor White
-    Write-Host "  7.  Repository statistics"               -ForegroundColor White
-    Write-Host "  8.  Detect available targets"            -ForegroundColor White
-    Write-Host "  9.  Unlock repository"                   -ForegroundColor White
-    Write-Host "  10. Browse snapshot contents"            -ForegroundColor White
-    Write-Host "  11. Dry-run backup (preview)"            -ForegroundColor White
+    Write-Host "  6.  Repository statistics"               -ForegroundColor White
+    Write-Host "  7.  Other options..."                    -ForegroundColor White
     Write-Host "  0.  Quit"                                -ForegroundColor DarkGray
     Write-Host ("=" * 60) -ForegroundColor Cyan
 }
@@ -1450,24 +1655,20 @@ while ($true) {
     $choice = Read-Host "Enter your choice"
 
     switch ($choice) {
-        "1"  { Initialize-Repository  -Config $Config -ResticExe $ResticExe }
-        "2"  { Start-Backup           -Config $Config -ResticExe $ResticExe }
-        "3"  { Show-Snapshots         -Config $Config -ResticExe $ResticExe }
-        "4"  { Restore-Backup         -Config $Config -ResticExe $ResticExe }
+        "1"  { Start-Backup           -Config $Config -ResticExe $ResticExe }
+        "2"  { Show-Snapshots         -Config $Config -ResticExe $ResticExe }
+        "3"  { Restore-Backup         -Config $Config -ResticExe $ResticExe }
+        "4"  { Invoke-Prune           -Config $Config -ResticExe $ResticExe }
         "5"  { Test-Repository        -Config $Config -ResticExe $ResticExe }
-        "6"  { Invoke-Prune           -Config $Config -ResticExe $ResticExe }
-        "7"  { Show-Stats             -Config $Config -ResticExe $ResticExe }
-        "8"  { Show-Targets           -Config $Config }
-        "9"  { Unlock-Repository      -Config $Config -ResticExe $ResticExe }
-        "10" { Show-SnapshotContents  -Config $Config -ResticExe $ResticExe }
-        "11" { Start-DryRunBackup     -Config $Config -ResticExe $ResticExe }
+        "6"  { Show-Stats             -Config $Config -ResticExe $ResticExe }
+        "7"  { Invoke-OtherMenu       -Config $Config -ResticExe $ResticExe }
         "0"  {
             Write-Log "Session ended by user"
             Write-Host "`nGoodbye!" -ForegroundColor Cyan
             exit 0
         }
         default {
-            Write-Err "Invalid choice. Please enter a number between 0 and 11."
+            Write-Err "Invalid choice. Please enter a number from 0 to 7."
         }
     }
 
