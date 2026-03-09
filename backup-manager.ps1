@@ -9,7 +9,7 @@
     per-backend selection, config validation, and more.
 
 .NOTES
-    Version      : 2.0.0
+    Version      : 2.1.0
     Requirements : restic.exe placed in .\Restic\restic.exe
     Configuration: .\config.json
     Logs         : .\logs\
@@ -25,7 +25,7 @@ $ErrorActionPreference = "Stop"
 # -----------------------------------------------------------------------------
 $ScriptRoot  = $PSScriptRoot
 $ConfigFile  = Join-Path $ScriptRoot "config.json"
-$ScriptVersion = "2.0.0"
+$ScriptVersion = "2.1.0"
 
 # -----------------------------------------------------------------------------
 # Helper - colored output
@@ -90,7 +90,7 @@ function Initialize-Log {
 # -----------------------------------------------------------------------------
 # Config loading & validation
 # -----------------------------------------------------------------------------
-function Load-Config {
+function Import-Config {
     if (-not (Test-Path $ConfigFile)) {
         Write-Err "config.json not found at: $ConfigFile"
         Write-Info "Create config.json in the script directory and fill in your settings (see the project documentation for details)."
@@ -255,7 +255,7 @@ function Find-UsbDrive {
     return $null
 }
 
-function Detect-LocalTargets {
+function Get-LocalTargets {
     <#
     .SYNOPSIS Returns a list of available local / removable drives with their labels.
     #>
@@ -403,6 +403,7 @@ function Invoke-ResticWithProgress {
     $stderrBuilder   = $null
     $stderrSourceId  = $null
     $stderrJob       = $null
+    $process         = $null
     $exitCode        = 1
 
     try {
@@ -435,7 +436,11 @@ function Invoke-ResticWithProgress {
         $process.Start() | Out-Null
         $process.BeginErrorReadLine()
 
-        # Read stdout line by line for JSON status
+        # Read stdout line by line for JSON status.
+        # Throttle Write-Progress to reduce overhead (restic emits status very frequently).
+        $progressSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $progressIntervalMs = 250
+
         while (-not $process.StandardOutput.EndOfStream) {
             $line = $process.StandardOutput.ReadLine()
 
@@ -449,7 +454,10 @@ function Invoke-ResticWithProgress {
                 }
 
                 if ($json.message_type -eq "status") {
-                    # Real-time progress update
+                    # Only refresh the progress bar once per throttle interval
+                    if ($progressSw.ElapsedMilliseconds -lt $progressIntervalMs) { continue }
+                    $progressSw.Restart()
+
                     $pctDone = 0
                     if ($json.total_bytes -and $json.total_bytes -gt 0) {
                         $pctDone = [math]::Min(100, [math]::Round(($json.bytes_done / $json.total_bytes) * 100, 1))
@@ -512,6 +520,9 @@ function Invoke-ResticWithProgress {
             if ($stderrText) { $diagnostics += $stderrText }
         }
 
+        # Release the native process handle
+        if ($process) { $process.Dispose() }
+
         Remove-Item Env:\RESTIC_REPOSITORY -ErrorAction SilentlyContinue
         Remove-Item Env:\RESTIC_PASSWORD   -ErrorAction SilentlyContinue
         Write-Progress -Activity $ActivityName -Completed
@@ -563,6 +574,37 @@ function Select-Backends {
 
     Write-Err "Invalid selection. Using all backends."
     return $enabledList
+}
+
+function Select-SingleBackend {
+    <#
+    .SYNOPSIS Prompts the user to pick exactly one enabled backend.
+    Returns the selected PSNoteProperty (Name + Value) or $null on failure.
+    #>
+    param($Config, [string]$Operation)
+
+    $enabledBackends = $Config.backends.PSObject.Properties | Where-Object { $_.Value.enabled }
+    if (-not $enabledBackends) { Write-Err "No enabled backends."; return $null }
+
+    $enabledList = @($enabledBackends)
+    if ($enabledList.Count -eq 1) { return $enabledList[0] }
+
+    Write-Host ""
+    Write-Host "  Select backend for ${Operation}:" -ForegroundColor White
+    $i = 1
+    foreach ($prop in $enabledList) {
+        Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
+        $i++
+    }
+    $userChoice = Read-Host "  Your choice"
+
+    [int]$choiceNumber = 0
+    if ([int]::TryParse($userChoice, [ref]$choiceNumber) -and $choiceNumber -ge 1 -and $choiceNumber -le $enabledList.Count) {
+        return $enabledList[$choiceNumber - 1]
+    }
+
+    Write-Err "Invalid selection."
+    return $null
 }
 
 # -----------------------------------------------------------------------------
@@ -628,6 +670,45 @@ function Initialize-Repository {
 }
 
 # -----------------------------------------------------------------------------
+# Shared helper - build common backup arguments (exclusions, compression, etc.)
+# Returns a hashtable with ExcludeArgs, CompressionArg, OfsArg, TagArgs.
+# -----------------------------------------------------------------------------
+function Build-BackupArguments {
+    param($Config)
+
+    $excludeArgs = @()
+    if ($Config.exclusions) {
+        $excludeArgs += $Config.exclusions | ForEach-Object { "--exclude=$_" }
+    }
+
+    $excludeCaches = Get-ConfigValue -Config $Config -Path "general.exclude_caches" -Default $false
+    if ($excludeCaches) { $excludeArgs += "--exclude-caches" }
+
+    $excludeIfPresent = Get-ConfigValue -Config $Config -Path "general.exclude_if_present" -Default @()
+    foreach ($marker in $excludeIfPresent) {
+        $excludeArgs += "--exclude-if-present=$marker"
+    }
+
+    $compression = Get-ConfigValue -Config $Config -Path "general.compression" -Default "auto"
+    $compressionArg = "--compression=$compression"
+
+    $oneFileSystem = Get-ConfigValue -Config $Config -Path "general.one_file_system" -Default $false
+    $ofsArg = @()
+    if ($oneFileSystem) { $ofsArg = @("--one-file-system") }
+
+    $tags = Get-ConfigValue -Config $Config -Path "general.tags" -Default @()
+    $tagArgs = @()
+    foreach ($tag in $tags) { $tagArgs += @("--tag", $tag) }
+
+    return @{
+        ExcludeArgs    = $excludeArgs
+        CompressionArg = $compressionArg
+        OfsArg         = $ofsArg
+        TagArgs        = $tagArgs
+    }
+}
+
+# -----------------------------------------------------------------------------
 # 2. Run backup (with progress bar and verbose output)
 # -----------------------------------------------------------------------------
 function Start-Backup {
@@ -663,39 +744,11 @@ function Start-Backup {
         Write-Detail "- $src"
     }
 
-    # Build exclusion flags
-    $excludeArgs = @()
-    if ($Config.exclusions) {
-        $excludeArgs += $Config.exclusions | ForEach-Object { "--exclude=$_" }
-    }
-
-    # Optional: exclude caches
-    $excludeCaches = Get-ConfigValue -Config $Config -Path "general.exclude_caches" -Default $false
-    if ($excludeCaches) {
-        $excludeArgs += "--exclude-caches"
-    }
-
-    # Optional: exclude if present
-    $excludeIfPresent = Get-ConfigValue -Config $Config -Path "general.exclude_if_present" -Default @()
-    foreach ($marker in $excludeIfPresent) {
-        $excludeArgs += "--exclude-if-present=$marker"
-    }
-
-    # Compression setting
-    $compression = Get-ConfigValue -Config $Config -Path "general.compression" -Default "auto"
-    $compressionArg = "--compression=$compression"
-
-    # One file system
-    $oneFileSystem = Get-ConfigValue -Config $Config -Path "general.one_file_system" -Default $false
-    $ofsArg = @()
-    if ($oneFileSystem) { $ofsArg = @("--one-file-system") }
-
-    # Tags
-    $tags = Get-ConfigValue -Config $Config -Path "general.tags" -Default @()
-    $tagArgs = @()
-    foreach ($tag in $tags) {
-        $tagArgs += @("--tag", $tag)
-    }
+    $ba = Build-BackupArguments -Config $Config
+    $excludeArgs    = $ba.ExcludeArgs
+    $compressionArg = $ba.CompressionArg
+    $ofsArg         = $ba.OfsArg
+    $tagArgs        = $ba.TagArgs
 
     # Verbose
     $verbose = Get-ConfigValue -Config $Config -Path "general.verbose" -Default $true
@@ -888,26 +941,8 @@ function Restore-Backup {
 
     Write-Header "Restore backup"
 
-    # Choose backend
-    $enabledBackends = $Config.backends.PSObject.Properties | Where-Object { $_.Value.enabled }
-    if (-not $enabledBackends) { Write-Err "No enabled backends."; return }
-
-    Write-Host "Available backends:" -ForegroundColor White
-    $i = 1
-    $map = @{}
-    foreach ($prop in $enabledBackends) {
-        Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
-        $map[$i] = $prop
-        $i++
-    }
-    $choiceInput = Read-Host "Select backend number"
-    [int]$choiceNumber = 0
-    if (-not [int]::TryParse($choiceInput, [ref]$choiceNumber)) {
-        Write-Err "Invalid selection. Please enter a valid number."
-        return
-    }
-    $selected = $map[$choiceNumber]
-    if (-not $selected) { Write-Err "Invalid selection."; return }
+    $selected = Select-SingleBackend -Config $Config -Operation "restore"
+    if (-not $selected) { return }
 
     $name    = $selected.Name
     $backend = $selected.Value
@@ -1109,7 +1144,7 @@ function Show-Targets {
     Write-Header "Detect available targets"
 
     Write-Step "Local / removable drives:"
-    $drives = @(Detect-LocalTargets)
+    $drives = @(Get-LocalTargets)
     if ($drives.Count -eq 0) {
         Write-Info "No drives detected (may require elevated privileges)."
     }
@@ -1193,26 +1228,8 @@ function Show-SnapshotContents {
 
     Write-Header "Browse snapshot contents"
 
-    # Choose backend
-    $enabledBackends = $Config.backends.PSObject.Properties | Where-Object { $_.Value.enabled }
-    if (-not $enabledBackends) { Write-Err "No enabled backends."; return }
-
-    Write-Host "Available backends:" -ForegroundColor White
-    $i = 1
-    $map = @{}
-    foreach ($prop in $enabledBackends) {
-        Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
-        $map[$i] = $prop
-        $i++
-    }
-    $choiceInput = Read-Host "Select backend number"
-    [int]$choiceNumber = 0
-    if (-not [int]::TryParse($choiceInput, [ref]$choiceNumber)) {
-        Write-Err "Invalid selection."
-        return
-    }
-    $selected = $map[$choiceNumber]
-    if (-not $selected) { Write-Err "Invalid selection."; return }
+    $selected = Select-SingleBackend -Config $Config -Operation "browse snapshots"
+    if (-not $selected) { return }
 
     $name    = $selected.Name
     $backend = $selected.Value
@@ -1257,30 +1274,11 @@ function Start-DryRunBackup {
         return
     }
 
-    # Build exclusion flags
-    $excludeArgs = @()
-    if ($Config.exclusions) {
-        $excludeArgs += $Config.exclusions | ForEach-Object { "--exclude=$_" }
-    }
-
-    $excludeCaches = Get-ConfigValue -Config $Config -Path "general.exclude_caches" -Default $false
-    if ($excludeCaches) { $excludeArgs += "--exclude-caches" }
-
-    $excludeIfPresent = Get-ConfigValue -Config $Config -Path "general.exclude_if_present" -Default @()
-    foreach ($marker in $excludeIfPresent) {
-        $excludeArgs += "--exclude-if-present=$marker"
-    }
-
-    $compression = Get-ConfigValue -Config $Config -Path "general.compression" -Default "auto"
-    $compressionArg = "--compression=$compression"
-
-    $oneFileSystem = Get-ConfigValue -Config $Config -Path "general.one_file_system" -Default $false
-    $ofsArg = @()
-    if ($oneFileSystem) { $ofsArg = @("--one-file-system") }
-
-    $tags = Get-ConfigValue -Config $Config -Path "general.tags" -Default @()
-    $tagArgs = @()
-    foreach ($tag in $tags) { $tagArgs += @("--tag", $tag) }
+    $ba = Build-BackupArguments -Config $Config
+    $excludeArgs    = $ba.ExcludeArgs
+    $compressionArg = $ba.CompressionArg
+    $ofsArg         = $ba.OfsArg
+    $tagArgs        = $ba.TagArgs
 
     # Select one backend for dry-run
     $selectedBackends = @(Select-Backends -Config $Config -Operation "dry-run")
@@ -1425,7 +1423,7 @@ function Show-Menu {
 # -----------------------------------------------------------------------------
 # Entry point
 # -----------------------------------------------------------------------------
-$Config = Load-Config
+$Config = Import-Config
 
 # Validate config before accessing any fields (Get-ResticExe / Initialize-Log
 # rely on general.restic_exe / general.log_dir and would throw an unhelpful

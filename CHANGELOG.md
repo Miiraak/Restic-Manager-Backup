@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1.0] - 2026-03-09
+
+### Changed
+- **Progress bar throttled** to ~250ms refresh interval, reducing `Write-Progress` overhead during backup/dry-run without affecting upload speed
+- **Extracted `Build-BackupArguments`** helper: eliminates duplicated exclusion/compression/tag argument building between `Start-Backup` and `Start-DryRunBackup`
+- **Extracted `Select-SingleBackend`** helper: replaces duplicated backend picker code in `Restore-Backup` and `Show-SnapshotContents`
+- Renamed `Load-Config` to `Import-Config` and `Detect-LocalTargets` to `Get-LocalTargets` (approved PowerShell verbs per CONTRIBUTING.md)
+
+### Fixed
+- `Invoke-ResticWithProgress` now calls `$process.Dispose()` to release native process handles (resource leak)
+- `$process` variable initialized before `try` block to prevent strict-mode error in `finally`
+
+---
+
 ## [2.0.0] - 2026-03-09
 
 ### Added
