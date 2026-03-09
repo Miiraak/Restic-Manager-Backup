@@ -385,9 +385,13 @@ function Invoke-ResticWithProgress {
 
     Write-Log "restic $Arguments (repo: $Repository)"
 
-    $summary    = $null
-    $lastFile   = ""
-    $diagnostics = @()   # Only stderr + non-status lines (avoid unbounded memory)
+    $summary         = $null
+    $lastFile        = ""
+    $diagnostics     = @()   # Only stderr + non-status lines (avoid unbounded memory)
+    $stderrBuilder   = $null
+    $stderrSourceId  = $null
+    $stderrJob       = $null
+    $exitCode        = 1
 
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
