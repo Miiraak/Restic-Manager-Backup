@@ -1573,7 +1573,7 @@ function Start-DryRunBackup {
 # Remove restic installation
 # -----------------------------------------------------------------------------
 function Remove-Repository {
-    param($Config, [string]$ResticExe)
+    param($Config)
 
     while ($true) {
         Write-Header "Remove repository"
@@ -1782,7 +1782,7 @@ function Remove-RemoteRepository {
                     $awsExe = Get-Command "aws" -ErrorAction SilentlyContinue
                     if ($awsExe) {
                         Write-Step "Removing S3 repository via AWS CLI..."
-                        & $awsExe.Source s3 rm "s3://$bucketPath" --recursive --endpoint-url $endpoint 2>&1 | Out-Host
+                        & aws s3 rm "s3://$bucketPath" --recursive --endpoint-url $endpoint 2>&1 | Out-Host
                         if ($LASTEXITCODE -eq 0) { $removed = $true }
                         else { Write-Err "[$name] AWS CLI returned exit code $LASTEXITCODE." }
                     }
@@ -1810,10 +1810,10 @@ function Remove-RemoteRepository {
                     if ($swiftExe) {
                         Write-Step "Removing Swift repository..."
                         if ($prefix) {
-                            & $swiftExe.Source delete $container --prefix $prefix 2>&1 | Out-Host
+                            & swift delete $container --prefix $prefix 2>&1 | Out-Host
                         }
                         else {
-                            & $swiftExe.Source delete $container 2>&1 | Out-Host
+                            & swift delete $container 2>&1 | Out-Host
                         }
                         if ($LASTEXITCODE -eq 0) { $removed = $true }
                         else { Write-Err "[$name] Swift CLI returned exit code $LASTEXITCODE." }
@@ -1850,7 +1850,7 @@ function Remove-RemoteRepository {
                     $sshExe = Get-Command "ssh" -ErrorAction SilentlyContinue
                     if ($sshExe) {
                         Write-Step "Removing SFTP repository via SSH..."
-                        & $sshExe.Source $sshTarget "rm -rf `"$remotePath`"" 2>&1 | Out-Host
+                        & ssh $sshTarget "rm -rf `"$remotePath`"" 2>&1 | Out-Host
                         if ($LASTEXITCODE -eq 0) { $removed = $true }
                         else { Write-Err "[$name] SSH returned exit code $LASTEXITCODE." }
                     }
@@ -1889,7 +1889,7 @@ function Show-OtherMenu {
     Write-Host "  3.  Unlock repository"                   -ForegroundColor White
     Write-Host "  4.  Browse snapshot contents"            -ForegroundColor White
     Write-Host "  5.  Dry-run backup (preview)"            -ForegroundColor White
-    Write-Host "  6.  Remove repository"                    -ForegroundColor White
+    Write-Host "  6.  Remove repository"                   -ForegroundColor White
     Write-Host "  0.  Back to main menu"                   -ForegroundColor DarkGray
     Write-Host ("=" * 60) -ForegroundColor Cyan
 }
@@ -1907,7 +1907,7 @@ function Invoke-OtherMenu {
             "3" { Unlock-Repository        -Config $Config -ResticExe $ResticExe }
             "4" { Show-SnapshotContents    -Config $Config -ResticExe $ResticExe }
             "5" { Start-DryRunBackup       -Config $Config -ResticExe $ResticExe }
-            "6" { Remove-Repository -Config $Config -ResticExe $ResticExe }
+            "6" { Remove-Repository -Config $Config }
             "0" { return }
             default {
                 Write-Err "Invalid choice. Please enter a number from 0 to 6."
