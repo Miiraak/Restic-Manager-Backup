@@ -340,8 +340,17 @@ function Invoke-Restic {
 
     try {
         if ($Silent) {
-            $output = & $ResticExe @Arguments 2>&1
-            $exit   = $LASTEXITCODE
+            # Temporarily allow stderr so 2>&1 captures errors as strings
+            # instead of terminating (NativeCommandError under Stop preference).
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $output = & $ResticExe @Arguments 2>&1
+                $exit   = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $prevEAP
+            }
         }
         else {
             & $ResticExe @Arguments | Out-Host
@@ -579,12 +588,13 @@ function Initialize-Repository {
 
     Write-Header "Initialize repository"
 
-    $backends = $Config.backends.PSObject.Properties
-    foreach ($prop in $backends) {
+    $selectedBackends = @(Select-Backends -Config $Config -Operation "initialization")
+    if ($selectedBackends.Count -eq 0) { return }
+
+    foreach ($prop in $selectedBackends) {
         $name    = $prop.Name
         $backend = $prop.Value
 
-        if (-not $backend.enabled) { Write-Info "[$name] disabled - skipped."; continue }
         if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         Write-Step "Initializing backend: $name ($($backend.description))"
@@ -845,12 +855,13 @@ function Show-Snapshots {
 
     Write-Header "List snapshots"
 
-    $backends = $Config.backends.PSObject.Properties
-    foreach ($prop in $backends) {
+    $selectedBackends = @(Select-Backends -Config $Config -Operation "list snapshots")
+    if ($selectedBackends.Count -eq 0) { return }
+
+    foreach ($prop in $selectedBackends) {
         $name    = $prop.Name
         $backend = $prop.Value
 
-        if (-not $backend.enabled) { continue }
         if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
@@ -952,12 +963,13 @@ function Test-Repository {
 
     Write-Header "Verify repository"
 
-    $backends = $Config.backends.PSObject.Properties
-    foreach ($prop in $backends) {
+    $selectedBackends = @(Select-Backends -Config $Config -Operation "verify")
+    if ($selectedBackends.Count -eq 0) { return }
+
+    foreach ($prop in $selectedBackends) {
         $name    = $prop.Name
         $backend = $prop.Value
 
-        if (-not $backend.enabled) { continue }
         if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
@@ -1019,12 +1031,13 @@ function Invoke-Prune {
         "--keep-yearly",  $ret.keep_yearly
     )
 
-    $backends = $Config.backends.PSObject.Properties
-    foreach ($prop in $backends) {
+    $selectedBackends = @(Select-Backends -Config $Config -Operation "prune")
+    if ($selectedBackends.Count -eq 0) { return }
+
+    foreach ($prop in $selectedBackends) {
         $name    = $prop.Name
         $backend = $prop.Value
 
-        if (-not $backend.enabled) { continue }
         if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
@@ -1062,12 +1075,13 @@ function Show-Stats {
 
     Write-Header "Repository statistics"
 
-    $backends = $Config.backends.PSObject.Properties
-    foreach ($prop in $backends) {
+    $selectedBackends = @(Select-Backends -Config $Config -Operation "statistics")
+    if ($selectedBackends.Count -eq 0) { return }
+
+    foreach ($prop in $selectedBackends) {
         $name    = $prop.Name
         $backend = $prop.Value
 
-        if (-not $backend.enabled) { continue }
         if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
@@ -1136,12 +1150,13 @@ function Unlock-Repository {
     Write-Header "Unlock repository"
     Write-Info "Removes stale locks from repositories (e.g. after a crashed backup)."
 
-    $backends = $Config.backends.PSObject.Properties
-    foreach ($prop in $backends) {
+    $selectedBackends = @(Select-Backends -Config $Config -Operation "unlock")
+    if ($selectedBackends.Count -eq 0) { return }
+
+    foreach ($prop in $selectedBackends) {
         $name    = $prop.Name
         $backend = $prop.Value
 
-        if (-not $backend.enabled) { continue }
         if (-not (Test-BackendNetwork -Name $name)) { continue }
 
         $repo = Resolve-Repository -BackendName $name -Backend $backend
@@ -1268,10 +1283,10 @@ function Start-DryRunBackup {
     foreach ($tag in $tags) { $tagArgs += @("--tag", $tag) }
 
     # Select one backend for dry-run
-    $enabledBackends = $Config.backends.PSObject.Properties | Where-Object { $_.Value.enabled }
-    if (-not $enabledBackends) { Write-Err "No enabled backends."; return }
+    $selectedBackends = @(Select-Backends -Config $Config -Operation "dry-run")
+    if ($selectedBackends.Count -eq 0) { return }
 
-    $first = @($enabledBackends)[0]
+    $first = $selectedBackends[0]
     $name    = $first.Name
     $backend = $first.Value
 
