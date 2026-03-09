@@ -31,6 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **S3 backend** example updated: uses Infomaniak Swiss Backup S3 endpoint (`s3.swiss-backup0X.infomaniak.com`)
 - **Swift backend** example updated: replaced generic OVH template with Infomaniak Swiss Backup connection details (Keystone v3, `OS_IDENTITY_API_VERSION`, `OS_PROJECT_NAME`, correct region/domain)
 - Added connection info reference table (EN + FR) for Infomaniak Swiss Backup in README
+- Duration formatting uses `hh:mm:ss` to avoid misleading wrap after 59 minutes
+
+### Fixed
+- Config validation now runs before `Get-ResticExe` / `Initialize-Log` to avoid strict-mode crashes on missing `general` fields
+- Stderr event cleanup uses correct `SubscriptionId` property (was `.Name`, which doesn't exist on `PSEventSubscriber`)
+- `Invoke-ResticWithProgress` no longer stores every status JSON line in memory (only stderr + summary + non-status lines are retained)
+- `log_retention_days` accessed via `Get-ConfigValue` with default of 30 (avoids strict-mode error when field is absent)
 
 ---
 

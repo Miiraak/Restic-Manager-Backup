@@ -120,7 +120,7 @@ function Test-Config {
     else {
         if (-not $Config.general.restic_exe) { $errors += "Missing 'general.restic_exe' field." }
         if (-not $Config.general.log_dir)    { $errors += "Missing 'general.log_dir' field." }
-        if ($null -eq $Config.general.log_retention_days) { $warnings += "Missing 'general.log_retention_days' field." }
+        if ($null -eq $Config.general.log_retention_days) { $warnings += "Missing 'general.log_retention_days' field (defaulting to 30 days)." }
     }
 
     # Check sources
@@ -385,9 +385,9 @@ function Invoke-ResticWithProgress {
 
     Write-Log "restic $Arguments (repo: $Repository)"
 
-    $summary  = $null
-    $lastFile = ""
-    $allOutput = @()
+    $summary    = $null
+    $lastFile   = ""
+    $diagnostics = @()   # Only stderr + non-status lines (avoid unbounded memory)
 
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -421,13 +421,15 @@ function Invoke-ResticWithProgress {
         # Read stdout line by line for JSON status
         while (-not $process.StandardOutput.EndOfStream) {
             $line = $process.StandardOutput.ReadLine()
-            $allOutput += $line
 
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
 
             try {
                 $json = $line | ConvertFrom-Json -ErrorAction SilentlyContinue
-                if (-not $json) { continue }
+                if (-not $json) {
+                    $diagnostics += $line
+                    continue
+                }
 
                 if ($json.message_type -eq "status") {
                     # Real-time progress update
@@ -462,6 +464,11 @@ function Invoke-ResticWithProgress {
                 }
                 elseif ($json.message_type -eq "summary") {
                     $summary = $json
+                    $diagnostics += $line
+                }
+                else {
+                    # Retain any non-status JSON (e.g. error messages)
+                    $diagnostics += $line
                 }
             }
             catch {
@@ -475,14 +482,16 @@ function Invoke-ResticWithProgress {
     finally {
         # Clean up stderr event handler and background job
         if ($stderrEvent) {
-            Unregister-Event -SourceIdentifier $stderrEvent.Name -Force -ErrorAction SilentlyContinue
-            Remove-Job -Name $stderrEvent.Name -Force -ErrorAction SilentlyContinue
+            Unregister-Event -SubscriptionId $stderrEvent.SubscriptionId -Force -ErrorAction SilentlyContinue
+            if ($stderrEvent.Action) {
+                Remove-Job -Id $stderrEvent.Action.Id -Force -ErrorAction SilentlyContinue
+            }
         }
 
         # Collect any stderr output that was captured asynchronously
         if ($stderrBuilder -and $stderrBuilder.Length -gt 0) {
             $stderrText = $stderrBuilder.ToString()
-            if ($stderrText) { $allOutput += $stderrText }
+            if ($stderrText) { $diagnostics += $stderrText }
         }
 
         Remove-Item Env:\RESTIC_REPOSITORY -ErrorAction SilentlyContinue
@@ -492,7 +501,7 @@ function Invoke-ResticWithProgress {
 
     return [PSCustomObject]@{
         ExitCode = $exitCode
-        Output   = $allOutput
+        Output   = $diagnostics
         Summary  = $summary
     }
 }
@@ -732,8 +741,8 @@ function Start-Backup {
         $backendDuration = (Get-Date) - $backendStart
 
         if ($result.ExitCode -eq 0) {
-            Write-OK "[$name] backup completed in $($backendDuration.ToString('mm\:ss'))."
-            Write-Log "[$name] backup OK (duration: $($backendDuration.ToString('mm\:ss')))" "INFO"
+            Write-OK "[$name] backup completed in $($backendDuration.ToString('hh\:mm\:ss'))."
+            Write-Log "[$name] backup OK (duration: $($backendDuration.ToString('hh\:mm\:ss')))" "INFO"
 
             # Display summary
             $summary = $result.Summary
@@ -785,7 +794,7 @@ function Start-Backup {
                     FilesNew   = "N/A"
                     FilesChg   = "N/A"
                     DataAdded  = "N/A"
-                    Duration   = $backendDuration.ToString('mm\:ss')
+                    Duration   = $backendDuration.ToString('hh\:mm\:ss')
                     SnapshotID = "N/A"
                 }
             }
@@ -801,7 +810,7 @@ function Start-Backup {
                 FilesNew   = "-"
                 FilesChg   = "-"
                 DataAdded  = "-"
-                Duration   = $backendDuration.ToString('mm\:ss')
+                Duration   = $backendDuration.ToString('hh\:mm\:ss')
                 SnapshotID = "-"
             }
         }
@@ -814,8 +823,8 @@ function Start-Backup {
         Write-Host ""
         Write-Header "Backup Summary"
         $backendResults | Format-Table -AutoSize
-        Write-Info ("Total elapsed time: {0:mm\:ss}" -f $overallDuration)
-        Write-Log ("Total backup duration: {0:mm\:ss}" -f $overallDuration)
+        Write-Info ("Total elapsed time: {0:hh\:mm\:ss}" -f $overallDuration)
+        Write-Log ("Total backup duration: {0:hh\:mm\:ss}" -f $overallDuration)
     }
 }
 
@@ -1383,23 +1392,27 @@ function Show-Menu {
 # -----------------------------------------------------------------------------
 # Entry point
 # -----------------------------------------------------------------------------
-$Config    = Load-Config
-$ResticExe = Get-ResticExe -Config $Config
-$LogDir    = Join-Path $ScriptRoot $Config.general.log_dir
-Initialize-Log -LogDir $LogDir
+$Config = Load-Config
 
-# Validate config
+# Validate config before accessing any fields (Get-ResticExe / Initialize-Log
+# rely on general.restic_exe / general.log_dir and would throw an unhelpful
+# strict-mode error if those fields are absent).
 $configValid = Test-Config -Config $Config
 if (-not $configValid) {
     Write-Err "Cannot start due to configuration errors. Please fix config.json and try again."
     exit 1
 }
 
+$ResticExe = Get-ResticExe -Config $Config
+$LogDir    = Join-Path $ScriptRoot $Config.general.log_dir
+Initialize-Log -LogDir $LogDir
+
 # Show startup banner
 Show-Banner -Config $Config
 
 # Purge old logs
-Remove-OldLogs -LogDir $LogDir -RetentionDays $Config.general.log_retention_days
+$logRetentionDays = Get-ConfigValue -Config $Config -Path "general.log_retention_days" -Default 30
+Remove-OldLogs -LogDir $LogDir -RetentionDays $logRetentionDays
 
 while ($true) {
     Show-Menu
