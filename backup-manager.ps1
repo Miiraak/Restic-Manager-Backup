@@ -633,9 +633,12 @@ function Invoke-ResticWithProgress {
 # Backend selection helper
 # -----------------------------------------------------------------------------
 function Select-Backends {
-    param($Config, [string]$Operation)
+    param($Config, [string]$Operation, [string[]]$BackendNames)
 
     $enabledBackends = $Config.backends.PSObject.Properties | Where-Object { $_.Value.enabled }
+    if ($BackendNames) {
+        $enabledBackends = @($enabledBackends | Where-Object { $_.Name -in $BackendNames })
+    }
     if (-not $enabledBackends) {
         Write-Err "No enabled backends found."
         return @()
@@ -1605,50 +1608,8 @@ function Remove-LocalRepository {
 
     Write-Header "Remove local/USB repository"
 
-    $localBackends = @($Config.backends.PSObject.Properties |
-        Where-Object { $_.Value.enabled -and $_.Name -in @("local", "usb") })
-
-    if ($localBackends.Count -eq 0) {
-        Write-Err "No enabled local/USB backends found."
-        return
-    }
-
-    if ($localBackends.Count -eq 1) {
-        $selected = $localBackends
-    }
-    else {
-        Write-Host ""
-        Write-Host "  Select backends to remove:" -ForegroundColor White
-        Write-Host "  [A] All ($($localBackends.Count))" -ForegroundColor White
-        $i = 1
-        foreach ($prop in $localBackends) {
-            Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
-            $i++
-        }
-        Write-Host "  [B] Back" -ForegroundColor DarkGray
-
-        $sel = Read-Host "  Your choice (A, number, or B to go back)"
-
-        if ($sel -eq "B" -or $sel -eq "b") {
-            Write-Info "Cancelled."
-            $script:BackRequested = $true
-            return
-        }
-
-        if ($sel -eq "A" -or $sel -eq "a" -or $sel -eq "") {
-            $selected = $localBackends
-        }
-        else {
-            [int]$n = 0
-            if ([int]::TryParse($sel, [ref]$n) -and $n -ge 1 -and $n -le $localBackends.Count) {
-                $selected = @($localBackends[$n - 1])
-            }
-            else {
-                Write-Err "Invalid selection."
-                return
-            }
-        }
-    }
+    $selected = Select-Backends -Config $Config -Operation "repository removal" -BackendNames @("local", "usb")
+    if ($selected.Count -eq 0) { return }
 
     foreach ($prop in $selected) {
         $name    = $prop.Name
@@ -1670,8 +1631,30 @@ function Remove-LocalRepository {
             }
         }
 
+        $repo = [System.IO.Path]::GetFullPath($repo)
+
+        # Defensive validation: reject drive roots
+        $pathRoot = [System.IO.Path]::GetPathRoot($repo)
+        if ($repo.TrimEnd('\', '/') -eq $pathRoot.TrimEnd('\', '/')) {
+            Write-Err "[$name] refusing to delete a drive root: $repo"
+            continue
+        }
+
+        # Defensive validation: reject ScriptRoot
+        if ($repo.TrimEnd('\', '/') -eq $ScriptRoot.TrimEnd('\', '/')) {
+            Write-Err "[$name] refusing to delete the script directory: $repo"
+            continue
+        }
+
         if (-not (Test-Path $repo)) {
             Write-Info "[$name] repository not found at: $repo"
+            continue
+        }
+
+        # Defensive validation: verify it looks like a restic repository
+        $configFile = Join-Path $repo "config"
+        if (-not (Test-Path $configFile)) {
+            Write-Err "[$name] path does not appear to be a restic repository (missing 'config' file): $repo"
             continue
         }
 
@@ -1700,50 +1683,8 @@ function Remove-RemoteRepository {
 
     Write-Header "Remove remote repository"
 
-    $remoteBackends = @($Config.backends.PSObject.Properties |
-        Where-Object { $_.Value.enabled -and $_.Name -in @("s3", "swift", "sftp") })
-
-    if ($remoteBackends.Count -eq 0) {
-        Write-Err "No enabled remote backends found."
-        return
-    }
-
-    if ($remoteBackends.Count -eq 1) {
-        $selected = $remoteBackends
-    }
-    else {
-        Write-Host ""
-        Write-Host "  Select backends to remove:" -ForegroundColor White
-        Write-Host "  [A] All ($($remoteBackends.Count))" -ForegroundColor White
-        $i = 1
-        foreach ($prop in $remoteBackends) {
-            Write-Host "  [$i] $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
-            $i++
-        }
-        Write-Host "  [B] Back" -ForegroundColor DarkGray
-
-        $sel = Read-Host "  Your choice (A, number, or B to go back)"
-
-        if ($sel -eq "B" -or $sel -eq "b") {
-            Write-Info "Cancelled."
-            $script:BackRequested = $true
-            return
-        }
-
-        if ($sel -eq "A" -or $sel -eq "a" -or $sel -eq "") {
-            $selected = $remoteBackends
-        }
-        else {
-            [int]$n = 0
-            if ([int]::TryParse($sel, [ref]$n) -and $n -ge 1 -and $n -le $remoteBackends.Count) {
-                $selected = @($remoteBackends[$n - 1])
-            }
-            else {
-                Write-Err "Invalid selection."
-                return
-            }
-        }
-    }
+    $selected = Select-Backends -Config $Config -Operation "repository removal" -BackendNames @("s3", "swift", "sftp")
+    if ($selected.Count -eq 0) { return }
 
     foreach ($prop in $selected) {
         $name    = $prop.Name
@@ -1787,7 +1728,7 @@ function Remove-RemoteRepository {
                     $awsExe = Get-Command "aws" -ErrorAction SilentlyContinue
                     if ($awsExe) {
                         Write-Step "Removing S3 repository via AWS CLI..."
-                        & aws s3 rm "s3://$bucketPath" --recursive --endpoint-url $endpoint 2>&1 | Out-Host
+                        & $awsExe.Source s3 rm "s3://$bucketPath" --recursive --endpoint-url $endpoint 2>&1 | Out-Host
                         if ($LASTEXITCODE -eq 0) { $removed = $true }
                         else { Write-Err "[$name] AWS CLI returned exit code $LASTEXITCODE." }
                     }
@@ -1815,10 +1756,10 @@ function Remove-RemoteRepository {
                     if ($swiftExe) {
                         Write-Step "Removing Swift repository..."
                         if ($prefix) {
-                            & swift delete $container --prefix $prefix 2>&1 | Out-Host
+                            & $swiftExe.Source delete $container --prefix $prefix 2>&1 | Out-Host
                         }
                         else {
-                            & swift delete $container 2>&1 | Out-Host
+                            & $swiftExe.Source delete $container 2>&1 | Out-Host
                         }
                         if ($LASTEXITCODE -eq 0) { $removed = $true }
                         else { Write-Err "[$name] Swift CLI returned exit code $LASTEXITCODE." }
@@ -1852,17 +1793,24 @@ function Remove-RemoteRepository {
                         continue
                     }
 
+                    # Validate remote path to prevent command injection
+                    if ($remotePath -match '[;`$|&<>(){}!]|''') {
+                        Write-Err "[$name] Remote path contains unsafe characters: $remotePath"
+                        continue
+                    }
+
                     $sshExe = Get-Command "ssh" -ErrorAction SilentlyContinue
                     if ($sshExe) {
                         Write-Step "Removing SFTP repository via SSH..."
-                        & ssh $sshTarget "rm -rf `"$remotePath`"" 2>&1 | Out-Host
+                        $escapedPath = $remotePath -replace "'", "'\''"
+                        & $sshExe.Source $sshTarget "rm -rf '$escapedPath'" 2>&1 | Out-Host
                         if ($LASTEXITCODE -eq 0) { $removed = $true }
                         else { Write-Err "[$name] SSH returned exit code $LASTEXITCODE." }
                     }
                     else {
                         Write-Err "[$name] SSH (ssh) not found."
                         Write-Info "Run manually:"
-                        Write-Detail "  ssh $sshTarget `"rm -rf $remotePath`""
+                        Write-Detail "  ssh $sshTarget 'rm -rf $remotePath'"
                     }
                 }
             }
