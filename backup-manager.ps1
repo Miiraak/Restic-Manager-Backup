@@ -19,6 +19,7 @@
 #Requires -Version 5.1
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:BackRequested  = $false
 
 # -----------------------------------------------------------------------------
 # Paths
@@ -632,9 +633,12 @@ function Invoke-ResticWithProgress {
 # Backend selection helper
 # -----------------------------------------------------------------------------
 function Select-Backends {
-    param($Config, [string]$Operation)
+    param($Config, [string]$Operation, [string[]]$BackendNames)
 
     $enabledBackends = $Config.backends.PSObject.Properties | Where-Object { $_.Value.enabled }
+    if ($BackendNames) {
+        $enabledBackends = @($enabledBackends | Where-Object { $_.Name -in $BackendNames })
+    }
     if (-not $enabledBackends) {
         Write-Err "No enabled backends found."
         return @()
@@ -659,6 +663,7 @@ function Select-Backends {
 
     if ($userChoice -eq "B" -or $userChoice -eq "b") {
         Write-Info "Cancelled."
+        $script:BackRequested = $true
         return @()
     }
 
@@ -700,6 +705,7 @@ function Select-SingleBackend {
 
     if ($userChoice -eq "B" -or $userChoice -eq "b") {
         Write-Info "Cancelled."
+        $script:BackRequested = $true
         return $null
     }
 
@@ -1195,7 +1201,7 @@ function Invoke-Prune {
         switch ($pruneChoice) {
             "1" { Invoke-PruneByPolicy  -Config $Config -ResticExe $ResticExe; return }
             "2" { Remove-Snapshot       -Config $Config -ResticExe $ResticExe; return }
-            "0" { return }
+            "0" { $script:BackRequested = $true; return }
             default {
                 Write-Err "Invalid choice. Please enter 0, 1, or 2."
             }
@@ -1572,65 +1578,255 @@ function Start-DryRunBackup {
 # -----------------------------------------------------------------------------
 # Remove restic installation
 # -----------------------------------------------------------------------------
-function Remove-ResticInstallation {
+function Remove-Repository {
     param($Config)
 
-    Write-Header "Remove restic installation"
+    while ($true) {
+        Write-Header "Remove repository"
 
-    $resticDir = Join-Path $ScriptRoot "Restic"
-    $logDir    = Join-Path $ScriptRoot $Config.general.log_dir
+        Write-Host ""
+        Write-Host "  Remove options:" -ForegroundColor White
+        Write-Host "  1. Remove local repository (local/USB)"      -ForegroundColor White
+        Write-Host "  2. Remove remote repository (S3/Swift/SFTP)" -ForegroundColor White
+        Write-Host "  0. Back"                                     -ForegroundColor DarkGray
 
-    Write-Info "This will remove the restic binary from the local Restic folder."
-    Write-Detail "  Restic folder : $resticDir"
-    Write-Detail "  Log folder    : $logDir"
-    Write-Host ""
-    Write-Warn "Repository data on remote/local backends will NOT be affected."
-    Write-Host ""
+        $choice = Read-Host "  Your choice"
 
-    $confirm = Read-Host "Remove restic binary? (y/N)"
-    if ($confirm -ne "y" -and $confirm -ne "Y") {
-        Write-Info "Removal cancelled."
-        return
-    }
-
-    # Remove restic binary
-    if (Test-Path $resticDir) {
-        $exeFiles = @(Get-ChildItem -Path $resticDir -Filter "restic*" -File -ErrorAction SilentlyContinue)
-        foreach ($f in $exeFiles) {
-            try {
-                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
-                Write-OK "Removed: $($f.FullName)"
-                Write-Log "Removed restic file: $($f.FullName)" "INFO"
-            }
-            catch {
-                Write-Err "Failed to remove $($f.FullName): $_"
-                Write-Log "Failed to remove $($f.FullName): $_" "ERROR"
+        switch ($choice) {
+            "1" { Remove-LocalRepository  -Config $Config; return }
+            "2" { Remove-RemoteRepository -Config $Config; return }
+            "0" { $script:BackRequested = $true; return }
+            default {
+                Write-Err "Invalid choice. Please enter 0, 1, or 2."
             }
         }
     }
-    else {
-        Write-Info "Restic folder not found - nothing to remove."
-    }
+}
 
-    # Optionally remove logs
-    $removeLogs = Read-Host "Also remove log files? (y/N)"
-    if ($removeLogs -eq "y" -or $removeLogs -eq "Y") {
-        if (Test-Path $logDir) {
-            try {
-                Remove-Item -LiteralPath $logDir -Recurse -Force -ErrorAction Stop
-                Write-OK "Removed log folder: $logDir"
+function Remove-LocalRepository {
+    param($Config)
+
+    Write-Header "Remove local/USB repository"
+
+    $selected = Select-Backends -Config $Config -Operation "repository removal" -BackendNames @("local", "usb")
+    if ($selected.Count -eq 0) { return }
+
+    foreach ($prop in $selected) {
+        $name    = $prop.Name
+        $backend = $prop.Value
+
+        # Resolve path without creating the directory
+        if ($name -eq "usb") {
+            $drive = Find-UsbDrive -Label $backend.drive_label
+            if (-not $drive) {
+                Write-Err "[$name] USB drive with label '$($backend.drive_label)' not found."
+                continue
             }
-            catch {
-                Write-Err "Failed to remove log folder: $_"
-            }
+            $repo = Join-Path $drive $backend.repository_path
         }
         else {
-            Write-Info "Log folder not found - nothing to remove."
+            $repo = $backend.repository
+            if (-not [System.IO.Path]::IsPathRooted($repo)) {
+                $repo = Join-Path $ScriptRoot $repo
+            }
+        }
+
+        $repo = [System.IO.Path]::GetFullPath($repo)
+
+        # Defensive validation: reject drive roots
+        $pathRoot = [System.IO.Path]::GetPathRoot($repo)
+        if ($repo.TrimEnd('\', '/') -eq $pathRoot.TrimEnd('\', '/')) {
+            Write-Err "[$name] refusing to delete a drive root: $repo"
+            continue
+        }
+
+        # Defensive validation: reject ScriptRoot
+        if ($repo.TrimEnd('\', '/') -eq $ScriptRoot.TrimEnd('\', '/')) {
+            Write-Err "[$name] refusing to delete the script directory: $repo"
+            continue
+        }
+
+        if (-not (Test-Path $repo)) {
+            Write-Info "[$name] repository not found at: $repo"
+            continue
+        }
+
+        # Defensive validation: verify it looks like a restic repository
+        $configFile = Join-Path $repo "config"
+        if (-not (Test-Path $configFile)) {
+            Write-Err "[$name] path does not appear to be a restic repository (missing 'config' file): $repo"
+            continue
+        }
+
+        Write-Warn "Repository path: $repo"
+        Write-Warn "This will permanently delete all data in this repository."
+        $confirm = Read-Host "Delete repository for [$name]? (y/N)"
+        if ($confirm -ne "y" -and $confirm -ne "Y") {
+            Write-Info "Skipped [$name]."
+            continue
+        }
+
+        try {
+            Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction Stop
+            Write-OK "[$name] repository removed successfully."
+            Write-Log "[$name] repository removed: $repo" "INFO"
+        }
+        catch {
+            Write-Err "[$name] failed to remove repository: $_"
+            Write-Log "[$name] repository removal failed: $_" "ERROR"
         }
     }
+}
 
-    Write-OK "Restic removal complete."
-    Write-Info "Repository data on backends has not been modified."
+function Remove-RemoteRepository {
+    param($Config)
+
+    Write-Header "Remove remote repository"
+
+    $selected = Select-Backends -Config $Config -Operation "repository removal" -BackendNames @("s3", "swift", "sftp")
+    if ($selected.Count -eq 0) { return }
+
+    foreach ($prop in $selected) {
+        $name    = $prop.Name
+        $backend = $prop.Value
+
+        if (-not (Test-BackendNetwork -Name $name)) { continue }
+
+        $repo = $backend.repository
+
+        Write-Warn "Repository: $repo"
+        Write-Warn "This will permanently delete all data in this repository."
+        $confirm = Read-Host "Delete repository for [$name]? (y/N)"
+        if ($confirm -ne "y" -and $confirm -ne "Y") {
+            Write-Info "Skipped [$name]."
+            continue
+        }
+
+        Set-BackendEnv -Backend $backend
+        try {
+            $removed = $false
+
+            switch ($name) {
+                "s3" {
+                    $s3Repo = $repo -replace "^s3:", ""
+                    $endpoint   = $null
+                    $bucketPath = $null
+
+                    if ($s3Repo -match "^(https?://[^/]+)/(.+)$") {
+                        $endpoint   = $Matches[1]
+                        $bucketPath = $Matches[2]
+                    }
+                    elseif ($s3Repo -match "^([^/]+)/(.+)$") {
+                        $endpoint   = "https://$($Matches[1])"
+                        $bucketPath = $Matches[2]
+                    }
+                    else {
+                        Write-Err "[$name] Unable to parse S3 repository URL: $repo"
+                        continue
+                    }
+
+                    $awsExe = Get-Command "aws" -ErrorAction SilentlyContinue
+                    if ($awsExe) {
+                        Write-Step "Removing S3 repository via AWS CLI..."
+                        & $awsExe.Source s3 rm "s3://$bucketPath" --recursive --endpoint-url $endpoint 2>&1 | Out-Host
+                        if ($LASTEXITCODE -eq 0) { $removed = $true }
+                        else { Write-Err "[$name] AWS CLI returned exit code $LASTEXITCODE." }
+                    }
+                    else {
+                        Write-Err "[$name] AWS CLI (aws) not found."
+                        Write-Info "Install the AWS CLI and run manually:"
+                        Write-Detail "  aws s3 rm s3://$bucketPath --recursive --endpoint-url $endpoint"
+                    }
+                }
+
+                "swift" {
+                    $container = $null
+                    $prefix    = $null
+
+                    if ($repo -match "^swift:([^:]+):/?(.*)$") {
+                        $container = $Matches[1]
+                        $prefix    = $Matches[2]
+                    }
+                    else {
+                        Write-Err "[$name] Unable to parse Swift repository URL: $repo"
+                        continue
+                    }
+
+                    $swiftExe = Get-Command "swift" -ErrorAction SilentlyContinue
+                    if ($swiftExe) {
+                        Write-Step "Removing Swift repository..."
+                        if ($prefix) {
+                            & $swiftExe.Source delete $container --prefix $prefix 2>&1 | Out-Host
+                        }
+                        else {
+                            & $swiftExe.Source delete $container 2>&1 | Out-Host
+                        }
+                        if ($LASTEXITCODE -eq 0) { $removed = $true }
+                        else { Write-Err "[$name] Swift CLI returned exit code $LASTEXITCODE." }
+                    }
+                    else {
+                        Write-Err "[$name] Swift CLI (swift) not found."
+                        Write-Info "Install the Swift CLI and run manually:"
+                        if ($prefix) {
+                            Write-Detail "  swift delete $container --prefix $prefix"
+                        }
+                        else {
+                            Write-Detail "  swift delete $container"
+                        }
+                    }
+                }
+
+                "sftp" {
+                    $sshTarget  = $null
+                    $remotePath = $null
+
+                    if ($repo -match "^sftp:([^@]+@[^:]+):(.+)$") {
+                        $sshTarget  = $Matches[1]
+                        $remotePath = $Matches[2]
+                    }
+                    elseif ($repo -match "^sftp://([^@]+@[^/]+)(/.+)$") {
+                        $sshTarget  = $Matches[1]
+                        $remotePath = $Matches[2]
+                    }
+                    else {
+                        Write-Err "[$name] Unable to parse SFTP repository URL: $repo"
+                        continue
+                    }
+
+                    # Validate remote path to prevent command injection
+                    if ($remotePath -match '[;`$|&<>(){}!]|''') {
+                        Write-Err "[$name] Remote path contains unsafe characters: $remotePath"
+                        continue
+                    }
+
+                    $sshExe = Get-Command "ssh" -ErrorAction SilentlyContinue
+                    if ($sshExe) {
+                        Write-Step "Removing SFTP repository via SSH..."
+                        $escapedPath = $remotePath -replace "'", "'\''"
+                        & $sshExe.Source $sshTarget "rm -rf '$escapedPath'" 2>&1 | Out-Host
+                        if ($LASTEXITCODE -eq 0) { $removed = $true }
+                        else { Write-Err "[$name] SSH returned exit code $LASTEXITCODE." }
+                    }
+                    else {
+                        Write-Err "[$name] SSH (ssh) not found."
+                        Write-Info "Run manually:"
+                        Write-Detail "  ssh $sshTarget 'rm -rf $remotePath'"
+                    }
+                }
+            }
+
+            if ($removed) {
+                Write-OK "[$name] repository removed successfully."
+                Write-Log "[$name] repository removed: $repo" "INFO"
+            }
+            else {
+                Write-Log "[$name] repository removal incomplete or failed" "WARN"
+            }
+        }
+        finally {
+            Clear-BackendEnv -Backend $backend
+        }
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -1646,7 +1842,7 @@ function Show-OtherMenu {
     Write-Host "  3.  Unlock repository"                   -ForegroundColor White
     Write-Host "  4.  Browse snapshot contents"            -ForegroundColor White
     Write-Host "  5.  Dry-run backup (preview)"            -ForegroundColor White
-    Write-Host "  6.  Remove restic installation"          -ForegroundColor White
+    Write-Host "  6.  Remove repository"                   -ForegroundColor White
     Write-Host "  0.  Back to main menu"                   -ForegroundColor DarkGray
     Write-Host ("=" * 60) -ForegroundColor Cyan
 }
@@ -1664,16 +1860,19 @@ function Invoke-OtherMenu {
             "3" { Unlock-Repository        -Config $Config -ResticExe $ResticExe }
             "4" { Show-SnapshotContents    -Config $Config -ResticExe $ResticExe }
             "5" { Start-DryRunBackup       -Config $Config -ResticExe $ResticExe }
-            "6" { Remove-ResticInstallation -Config $Config }
-            "0" { return }
+            "6" { Remove-Repository -Config $Config }
+            "0" { $script:BackRequested = $true; return }
             default {
                 Write-Err "Invalid choice. Please enter a number from 0 to 6."
                 continue
             }
         }
 
-        Write-Host ""
-        Read-Host "Press Enter to continue" | Out-Null
+        if (-not $script:BackRequested) {
+            Write-Host ""
+            Read-Host "Press Enter to continue" | Out-Null
+        }
+        $script:BackRequested = $false
     }
 }
 
@@ -1796,6 +1995,9 @@ while ($true) {
         }
     }
 
-    Write-Host ""
-    Read-Host "Press Enter to return to the menu" | Out-Null
+    if (-not $script:BackRequested) {
+        Write-Host ""
+        Read-Host "Press Enter to return to the menu" | Out-Null
+    }
+    $script:BackRequested = $false
 }
