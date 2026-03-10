@@ -1608,7 +1608,7 @@ function Remove-LocalRepository {
 
     Write-Header "Remove local/USB repository"
 
-    $selected = Select-Backends -Config $Config -Operation "repository removal" -BackendNames @("local", "usb")
+    $selected = @(Select-Backends -Config $Config -Operation "repository removal" -BackendNames @("local", "usb"))
     if ($selected.Count -eq 0) { return }
 
     foreach ($prop in $selected) {
@@ -1683,7 +1683,7 @@ function Remove-RemoteRepository {
 
     Write-Header "Remove remote repository"
 
-    $selected = Select-Backends -Config $Config -Operation "repository removal" -BackendNames @("s3", "swift", "sftp")
+    $selected = @(Select-Backends -Config $Config -Operation "repository removal" -BackendNames @("s3", "swift", "sftp"))
     if ($selected.Count -eq 0) { return }
 
     foreach ($prop in $selected) {
