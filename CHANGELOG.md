@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.0] - 2026-07-12
+
+### Changed
+- **Performance**: Replaced all `ForEach-Object` pipelines with `foreach` statements in `Set-BackendEnv`, `Clear-BackendEnv`, `Test-Config`, `Show-Banner`, `Get-LocalTargets`, `Remove-OldLogs`, and source expansion (`Start-Backup`, `Start-DryRunBackup`) — eliminates per-iteration scriptblock overhead
+- **Performance**: `Invoke-ResticWithProgress` now uses `[System.Collections.Generic.List[string]]` for diagnostics instead of `@()` with `+=` — avoids O(n²) array reallocation
+- **Performance**: Added fast `'{' ` pre-check before `ConvertFrom-Json` in progress loop — skips expensive JSON parsing for non-JSON output lines
+- **Performance**: `Write-Log` uses `[System.IO.File]::AppendAllText()` instead of `Add-Content` — avoids cmdlet parameter binding and provider resolution overhead
+- **Performance**: `Build-BackupArguments` directly accesses `$Config.general` properties instead of calling `Get-ConfigValue` for each field — reduces function call overhead
+- **Performance**: `Get-LocalTargets` uses `[System.Collections.Generic.List[PSCustomObject]]` instead of `@()` with `+=`
+- **Refactoring**: Extracted `Find-Summary` helper — deduplicates summary JSON parsing logic previously repeated in `Start-Backup`, `Restore-Backup`, `Start-DryRunBackup`, and silent-mode backup (4 occurrences)
+
+---
+
 ## [2.2.0] - 2026-03-09
 
 ### Added
