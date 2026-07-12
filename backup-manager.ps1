@@ -857,7 +857,7 @@ function Start-Backup {
     Write-Header "Run backup"
 
     # Build source list (expand %USERNAME% etc.)
-    $sources = foreach ($s in $Config.sources) { [System.Environment]::ExpandEnvironmentVariables($s) }
+    $sources = @(foreach ($s in $Config.sources) { [System.Environment]::ExpandEnvironmentVariables($s) })
 
     # Validate sources
     $validSources   = @()
