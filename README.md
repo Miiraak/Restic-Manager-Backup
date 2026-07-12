@@ -5,7 +5,7 @@
 Interactive backup manager built on [restic](https://restic.net/), designed for Windows 64-bit.  
 A single PowerShell script, a JSON configuration file, and incremental deduplicated backups to multiple destinations simultaneously.
 
-**v2.0.0** – Real-time progress bar, per-backend selection, dry-run backup, snapshot browsing, repository unlock, config validation, restore filters, prune confirmation, and startup banner.
+**v2.3.0** – ASCII progress bar, restore progress, per-backend selection, dry-run backup, snapshot browsing, repository unlock & removal, specific snapshot deletion, config validation, restore filters, prune confirmation, startup banner, and performance optimizations.
 
 🇫🇷 *[Version française ci-dessous](#version-française)*
 
@@ -254,84 +254,112 @@ The repository will be created at `E:\ResticRepo\` (drive letter assigned automa
 
 ## CLI Menu Usage
 
-At startup, a banner displays the version, enabled backends, and source count. Then the following menu is displayed:
+At startup, a banner displays the version, enabled backends, and source count. Then the **main menu** is displayed:
 
 ```
 ============================================================
    Restic Manager Backup - Multi-backend CLI
 ============================================================
-  1. Initialize repository
-  2. Run backup
-  3. List snapshots
-  4. Restore backup
-  5. Verify repository
-  6. Prune repository
-  7. Repository statistics
-  8. Detect available targets
-  9. Unlock repository
-  10. Browse snapshot contents
-  11. Dry-run backup
-  0. Quit
+  1.  Run backup
+  2.  List snapshots
+  3.  Restore backup
+  4.  Prune repository
+  5.  Verify repository
+  6.  Repository statistics
+  7.  Other options...
+  0.  Quit
 ============================================================
 ```
 
-### Option 1 – Initialize repository
+Selecting **option 7** opens the **Other options** sub-menu:
 
-Creates a new restic repository on each enabled backend.  
-If the repository already exists, this operation is silently skipped.  
-**Run once per backend.**
+```
+============================================================
+   Other Options
+============================================================
+  1.  Initialize repository
+  2.  Detect available targets
+  3.  Unlock repository
+  4.  Browse snapshot contents
+  5.  Dry-run backup (preview)
+  6.  Remove repository
+  0.  Back to main menu
+============================================================
+```
 
-### Option 2 – Run backup
+### Main Menu
+
+#### Option 1 – Run backup
 
 Runs an incremental, deduplicated backup. You can select specific backends or run all enabled backends at once.
-- A real-time **progress bar** shows file count, bytes processed, and the current file being backed up (when `verbose` is enabled).
+- A colored **ASCII progress bar** shows file count, bytes processed, and the current file being backed up (when `verbose` is enabled).
 - Network backends (S3, Swift, SFTP) are skipped if no network is available.
 - Compression mode is configurable via `config.json` (`"auto"`, `"off"`, or `"max"`).
 - An enhanced **per-backend summary table** is displayed after completion (files new/changed, data added, duration, snapshot ID).
 - Elapsed time is shown for each backend.
 
-### Option 3 – List snapshots
+#### Option 2 – List snapshots
 
 Displays a list of all available snapshots in each enabled backend.
 
-### Option 4 – Restore backup
+#### Option 3 – Restore backup
 
 1. Select the source backend.
 2. Choose the snapshot ID (or `latest`).
 3. Enter the destination directory.
 4. Optionally specify **include/exclude patterns** to restore only specific files or skip certain paths.
+5. A real-time **ASCII progress bar** displays restore progress, followed by a restore summary on completion.
 
-### Option 5 – Verify repository
+#### Option 4 – Prune repository
+
+Opens a sub-menu with two options:
+1. **Prune by retention policy** – Displays the current retention policy and asks for **Y/N confirmation** before proceeding. Applies the policy defined in `config.json` and removes old unused snapshots/packs.
+2. **Delete specific snapshot** – Lists snapshots for a selected backend and lets you delete a specific snapshot by ID (with confirmation).
+
+#### Option 5 – Verify repository
 
 Runs `restic check` to verify data integrity in each backend.
 
-### Option 6 – Prune (cleanup)
-
-Displays the current retention policy and asks for **Y/N confirmation** before proceeding.  
-Applies the retention policy defined in `config.json` and removes old unused snapshots/packs.
-
-### Option 7 – Statistics
+#### Option 6 – Statistics
 
 Displays storage statistics (total size, deduplication) for each backend.
 
-### Option 8 – Detect available targets
+#### Option 7 – Other options
+
+Opens the sub-menu described above.
+
+### Other Options Sub-Menu
+
+#### Option 1 – Initialize repository
+
+Creates a new restic repository on each enabled backend.  
+If the repository already exists, this operation is silently skipped.  
+**Run once per backend.**
+
+#### Option 2 – Detect available targets
 
 Lists:
 - All local and removable drives (letter, label, type, free/total space)
 - Whether the configured USB drive is present
 - Network availability
 
-### Option 9 – Unlock repository
+#### Option 3 – Unlock repository
 
 Removes stale locks from restic repositories. Useful when a previous operation was interrupted and left a lock behind.
 
-### Option 10 – Browse snapshot contents
+#### Option 4 – Browse snapshot contents
 
 Lists the files inside a specific snapshot using `restic ls`. Select a backend and snapshot ID to explore its contents.
 
-### Option 11 – Dry-run backup
+#### Option 5 – Dry-run backup (preview)
 
 Simulates a backup without actually writing any data. Shows what files **would** be backed up, allowing you to verify your sources and exclusions before committing.
+
+#### Option 6 – Remove repository
+
+Permanently deletes a restic repository. Opens a sub-menu with two options:
+1. **Remove local repository** (local / USB) – Deletes the repository folder from the local disk or USB drive after safety checks (won't delete drive roots or the script directory, and verifies the target is a valid restic repository).
+2. **Remove remote repository** (S3 / Swift / SFTP) – Displays instructions and provider-specific commands for removing remote repositories, since they cannot be deleted directly by the script.
 
 ---
 
@@ -452,7 +480,7 @@ Recommended measures:
 Gestionnaire de sauvegardes interactif basé sur [restic](https://restic.net/), conçu pour Windows 64 bits.  
 Un seul script PowerShell, un fichier JSON de configuration, des sauvegardes incrémentielles dédupliquées vers plusieurs destinations simultanément.
 
-**v2.0.0** – Barre de progression en temps réel, sélection par backend, dry-run, exploration de snapshots, déverrouillage de dépôt, validation de configuration, filtres de restauration, confirmation de prune et bannière de démarrage.
+**v2.3.0** – Barre de progression ASCII, progression de restauration, sélection par backend, dry-run, exploration de snapshots, déverrouillage et suppression de dépôt, suppression de snapshot spécifique, validation de configuration, filtres de restauration, confirmation de prune, bannière de démarrage et optimisations de performance.
 
 ---
 
@@ -697,84 +725,112 @@ Le repository sera créé dans `E:\ResticRepo\` (lettre de lecteur automatique).
 
 ## Utilisation du menu CLI
 
-Au démarrage, une bannière affiche la version, les backends activés et le nombre de sources. Puis le menu suivant s'affiche :
+Au démarrage, une bannière affiche la version, les backends activés et le nombre de sources. Puis le **menu principal** s'affiche :
 
 ```
 ============================================================
    Restic Manager Backup - Multi-backend CLI
 ============================================================
-  1. Initialize repository
-  2. Run backup
-  3. List snapshots
-  4. Restore backup
-  5. Verify repository
-  6. Prune repository
-  7. Repository statistics
-  8. Detect available targets
-  9. Unlock repository
-  10. Browse snapshot contents
-  11. Dry-run backup
-  0. Quit
+  1.  Run backup
+  2.  List snapshots
+  3.  Restore backup
+  4.  Prune repository
+  5.  Verify repository
+  6.  Repository statistics
+  7.  Other options...
+  0.  Quit
 ============================================================
 ```
 
-### Option 1 – Initialiser le repository
+En sélectionnant l'**option 7**, le sous-menu **Other Options** s'ouvre :
 
-Crée un nouveau repository restic sur chaque backend activé.  
-Si le repository existe déjà, cette opération est ignorée sans erreur.  
-**À exécuter une seule fois par backend.**
+```
+============================================================
+   Other Options
+============================================================
+  1.  Initialize repository
+  2.  Detect available targets
+  3.  Unlock repository
+  4.  Browse snapshot contents
+  5.  Dry-run backup (preview)
+  6.  Remove repository
+  0.  Back to main menu
+============================================================
+```
 
-### Option 2 – Lancer le backup
+### Menu principal
+
+#### Option 1 – Lancer le backup
 
 Lance une sauvegarde incrémentale et dédupliquée. Vous pouvez sélectionner des backends spécifiques ou les exécuter tous en une fois.
-- Une **barre de progression** en temps réel affiche le nombre de fichiers, les octets traités et le fichier en cours (lorsque `verbose` est activé).
+- Une **barre de progression ASCII** colorée affiche le nombre de fichiers, les octets traités et le fichier en cours (lorsque `verbose` est activé).
 - Les backends réseau (S3, Swift, SFTP) sont ignorés si le réseau n'est pas disponible.
 - Le mode de compression est configurable via `config.json` (`"auto"`, `"off"` ou `"max"`).
 - Un **tableau récapitulatif par backend** amélioré est affiché après l'exécution (fichiers nouveaux/modifiés, données ajoutées, durée, ID du snapshot).
 - Le temps écoulé est affiché pour chaque backend.
 
-### Option 3 – Lister les snapshots
+#### Option 2 – Lister les snapshots
 
 Affiche la liste de tous les snapshots disponibles dans chaque backend activé.
 
-### Option 4 – Restaurer un backup
+#### Option 3 – Restaurer un backup
 
 1. Sélectionner le backend source.  
 2. Choisir l'ID de snapshot (ou `latest`).  
 3. Indiquer le répertoire de destination.
 4. Spécifier éventuellement des **filtres d'inclusion/exclusion** pour ne restaurer que certains fichiers ou ignorer certains chemins.
+5. Une **barre de progression ASCII** en temps réel affiche la progression de la restauration, suivie d'un résumé à la fin.
 
-### Option 5 – Vérifier le repository
+#### Option 4 – Prune (nettoyage)
+
+Ouvre un sous-menu avec deux options :
+1. **Prune par politique de rétention** – Affiche la politique de rétention actuelle et demande une **confirmation Y/N** avant de procéder. Applique la politique définie dans `config.json` et supprime les anciens snapshots/packs inutilisés.
+2. **Supprimer un snapshot spécifique** – Liste les snapshots pour un backend sélectionné et permet de supprimer un snapshot spécifique par son ID (avec confirmation).
+
+#### Option 5 – Vérifier le repository
 
 Exécute `restic check` pour s'assurer de l'intégrité des données dans chaque backend.
 
-### Option 6 – Prune (nettoyage)
-
-Affiche la politique de rétention actuelle et demande une **confirmation Y/N** avant de procéder.  
-Applique la politique de rétention définie dans `config.json` et supprime les anciens snapshots/packs inutilisés.
-
-### Option 7 – Statistiques
+#### Option 6 – Statistiques
 
 Affiche les statistiques de stockage (taille totale, déduplication) pour chaque backend.
 
-### Option 8 – Détecter les cibles disponibles
+#### Option 7 – Autres options
+
+Ouvre le sous-menu décrit ci-dessus.
+
+### Sous-menu Autres options
+
+#### Option 1 – Initialiser le repository
+
+Crée un nouveau repository restic sur chaque backend activé.  
+Si le repository existe déjà, cette opération est ignorée sans erreur.  
+**À exécuter une seule fois par backend.**
+
+#### Option 2 – Détecter les cibles disponibles
 
 Liste :
 - Tous les lecteurs locaux et amovibles (lettre, label, type, espace libre/total)
 - La présence ou non de la clé USB configurée
 - La disponibilité du réseau
 
-### Option 9 – Déverrouiller le repository
+#### Option 3 – Déverrouiller le repository
 
 Supprime les verrous obsolètes des repositories restic. Utile lorsqu'une opération précédente a été interrompue et a laissé un verrou.
 
-### Option 10 – Explorer le contenu d'un snapshot
+#### Option 4 – Explorer le contenu d'un snapshot
 
 Liste les fichiers contenus dans un snapshot spécifique via `restic ls`. Sélectionnez un backend et un ID de snapshot pour en explorer le contenu.
 
-### Option 11 – Dry-run (simulation de backup)
+#### Option 5 – Dry-run (simulation de backup)
 
 Simule une sauvegarde sans écrire de données. Affiche les fichiers qui **seraient** sauvegardés, permettant de vérifier vos sources et exclusions avant de lancer la sauvegarde réelle.
+
+#### Option 6 – Supprimer un repository
+
+Supprime définitivement un repository restic. Ouvre un sous-menu avec deux options :
+1. **Supprimer un repository local** (local / USB) – Supprime le dossier du repository du disque local ou de la clé USB après vérifications de sécurité (refuse de supprimer la racine d'un lecteur ou le dossier du script, et vérifie que la cible est un repository restic valide).
+2. **Supprimer un repository distant** (S3 / Swift / SFTP) – Affiche les instructions et les commandes spécifiques au fournisseur pour supprimer les repositories distants, car le script ne peut pas les supprimer directement.
 
 ---
 
