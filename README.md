@@ -366,21 +366,21 @@ Permanently deletes a restic repository. Opens a sub-menu with two options:
 Here is a recommended workflow:
 
 ```
-1. [First time only] Initialize repositories (option 1)
+1. [First time only] Initialize repositories (Main Menu > option 7 > Other options > option 1)
 2. Connect the USB drive
-3. Run backup (option 2)
+3. Run backup (Main Menu > option 1)
    |-- Backend "local"  -> C:\...\repos\local\
    |-- Backend "usb"    -> E:\ResticRepo\  (USB drive)
    +-- Backend "s3"     -> s3:https://...  (cloud, if network available)
 4. Verify repositories (option 5) -- periodically
-5. Prune (option 6) -- weekly or monthly
+5. Prune (option 4) -- weekly or monthly
 ```
 
 ---
 
 ## Retention and Pruning
 
-The **Prune (option 6)** command runs `restic forget --prune` with the following parameters (configurable in `config.json`):
+The **Prune (option 4)** command runs `restic forget --prune` with the following parameters (configurable in `config.json`):
 
 | Parameter      | Default | Meaning                                        |
 |----------------|---------|------------------------------------------------|

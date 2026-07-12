@@ -306,7 +306,8 @@ function Find-Summary {
     param([object[]]$Lines)
     foreach ($line in $Lines) {
         if ($line -match '"message_type"\s*:\s*"summary"') {
-            try { return ($line | ConvertFrom-Json) } catch { }
+            # -ErrorAction Stop ensures parse failures are caught; silently skip malformed/truncated lines.
+            try { return ($line | ConvertFrom-Json -ErrorAction Stop) } catch { }
         }
     }
     return $null
