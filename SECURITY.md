@@ -2,7 +2,7 @@
 
 ## Credential Handling
 
-> ⚠️ **Passwords and credentials are stored in plain text in `config.json`.**
+> [!] **Passwords and credentials are stored in plain text in `config.json`.**
 
 This is a known limitation of the current design. Take the following precautions:
 
@@ -52,8 +52,8 @@ We will acknowledge receipt and work on a fix as soon as possible.
 
 | Version | Supported |
 |---------|-----------|
-| 2.3.x   | ✅        |
-| 2.2.x   | ✅        |
-| 2.1.x   | ✅        |
-| 2.0.x   | ✅        |
-| 1.0.x   | ✅        |
+| 2.3.x   | Yes        |
+| 2.2.x   | Yes        |
+| 2.1.x   | Yes        |
+| 2.0.x   | Yes        |
+| 1.0.x   | Yes        |

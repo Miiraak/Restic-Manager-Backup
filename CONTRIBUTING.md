@@ -52,7 +52,7 @@ Feature requests are welcome! Please open an issue with:
 - New backends should follow the existing pattern in `config.json`
 - Always include `enabled`, `description`, `password`, and `env` fields
 - Optional `general` settings (e.g. `verbose`, `compression`, `tags`) should have sensible defaults in the script via `Get-ConfigValue` so they remain backward-compatible
-- Document any new configuration options in the README (both English and French sections)
+- Document any new configuration options in the README
 
 ### Security
 
