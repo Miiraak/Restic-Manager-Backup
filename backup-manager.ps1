@@ -9,7 +9,7 @@
     per-backend selection, config validation, and more.
 
 .NOTES
-    Version      : 2.2.0
+    Version      : 2.3.0
     Requirements : restic.exe placed in .\Restic\restic.exe
     Configuration: .\config.json
     Logs         : .\logs\
@@ -26,7 +26,7 @@ $script:BackRequested  = $false
 # -----------------------------------------------------------------------------
 $ScriptRoot  = $PSScriptRoot
 $ConfigFile  = Join-Path $ScriptRoot "config.json"
-$ScriptVersion = "2.2.0"
+$ScriptVersion = "2.3.0"
 
 # -----------------------------------------------------------------------------
 # Helper - colored output
@@ -164,9 +164,16 @@ $LogFile = $null   # set once config is loaded
 
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
+    if (-not $LogFile) { return }
     $ts   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$ts][$Level] $Message"
-    if ($LogFile) { Add-Content -Path $LogFile -Value $line -Encoding UTF8 }
+    # Direct .NET call avoids cmdlet overhead (parameter binding, provider resolution)
+    try {
+        [System.IO.File]::AppendAllText($LogFile, $line + [System.Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    }
+    catch {
+        # Logging is best-effort and should not interrupt backup/restore operations
+    }
 }
 
 function Initialize-Log {
@@ -234,9 +241,9 @@ function Test-Config {
     }
     else {
         $enabledCount = 0
-        $Config.backends.PSObject.Properties | ForEach-Object {
-            $name = $_.Name
-            $b    = $_.Value
+        foreach ($prop in $Config.backends.PSObject.Properties) {
+            $name = $prop.Name
+            $b    = $prop.Value
             if ($b.enabled) {
                 $enabledCount++
                 if (-not $b.password) { $warnings += "Backend '$name' is enabled but has no password set." }
@@ -294,6 +301,24 @@ function Get-ConfigValue {
 }
 
 # -----------------------------------------------------------------------------
+# Helper - parse backup/restore summary from restic output lines
+# -----------------------------------------------------------------------------
+function Find-Summary {
+    <#
+    .SYNOPSIS Searches an array of output lines for a restic JSON summary object.
+    Returns the parsed summary or $null.
+    #>
+    param([object[]]$Lines)
+    foreach ($line in $Lines) {
+        if ($line -match '"message_type"\s*:\s*"summary"') {
+            # -ErrorAction Stop ensures parse failures are caught; silently skip malformed/truncated lines.
+            try { return ($line | ConvertFrom-Json -ErrorAction Stop) } catch { }
+        }
+    }
+    return $null
+}
+
+# -----------------------------------------------------------------------------
 # Restic binary helper
 # -----------------------------------------------------------------------------
 function Get-ResticExe {
@@ -313,8 +338,8 @@ function Get-ResticExe {
 function Set-BackendEnv {
     param([PSCustomObject]$Backend)
     if ($Backend.env) {
-        $Backend.env.PSObject.Properties | ForEach-Object {
-            [System.Environment]::SetEnvironmentVariable($_.Name, $_.Value, "Process")
+        foreach ($prop in $Backend.env.PSObject.Properties) {
+            [System.Environment]::SetEnvironmentVariable($prop.Name, $prop.Value, "Process")
         }
     }
 }
@@ -322,8 +347,8 @@ function Set-BackendEnv {
 function Clear-BackendEnv {
     param([PSCustomObject]$Backend)
     if ($Backend.env) {
-        $Backend.env.PSObject.Properties | ForEach-Object {
-            [System.Environment]::SetEnvironmentVariable($_.Name, $null, "Process")
+        foreach ($prop in $Backend.env.PSObject.Properties) {
+            [System.Environment]::SetEnvironmentVariable($prop.Name, $null, "Process")
         }
     }
 }
@@ -348,19 +373,18 @@ function Get-LocalTargets {
     <#
     .SYNOPSIS Returns a list of available local / removable drives with their labels.
     #>
-    $results = @()
+    $results = [System.Collections.Generic.List[PSCustomObject]]::new()
     try {
-        Get-CimInstance -ClassName Win32_LogicalDisk |
-            Where-Object { $_.DriveType -in @(2, 3) } |
-            ForEach-Object {
-                $results += [PSCustomObject]@{
-                    DeviceID   = $_.DeviceID
-                    VolumeName = $_.VolumeName
-                    DriveType  = if ($_.DriveType -eq 2) { "Removable" } else { "Fixed" }
-                    FreeGB     = [math]::Round($_.FreeSpace / 1GB, 2)
-                    TotalGB    = [math]::Round($_.Size / 1GB, 2)
-                }
-            }
+        $disks = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType=2 OR DriveType=3"
+        foreach ($disk in $disks) {
+            $results.Add([PSCustomObject]@{
+                DeviceID   = $disk.DeviceID
+                VolumeName = $disk.VolumeName
+                DriveType  = if ($disk.DriveType -eq 2) { "Removable" } else { "Fixed" }
+                FreeGB     = [math]::Round($disk.FreeSpace / 1GB, 2)
+                TotalGB    = [math]::Round($disk.Size / 1GB, 2)
+            })
+        }
     }
     catch {
         Write-Info "CIM unavailable - skipping drive detection."
@@ -488,7 +512,7 @@ function Invoke-ResticWithProgress {
 
     $summary         = $null
     $lastFile        = ""
-    $diagnostics     = @()   # Only stderr + non-status lines (avoid unbounded memory)
+    $diagnostics     = [System.Collections.Generic.List[string]]::new()
     $stderrBuilder   = $null
     $stderrSourceId  = $null
     $stderrJob       = $null
@@ -535,10 +559,16 @@ function Invoke-ResticWithProgress {
 
             if ([string]::IsNullOrWhiteSpace($line)) { continue }
 
+            # Fast pre-check: restic JSON lines always start with '{'
+            if ($line[0] -ne '{') {
+                $diagnostics.Add($line)
+                continue
+            }
+
             try {
                 $json = $line | ConvertFrom-Json -ErrorAction SilentlyContinue
                 if (-not $json) {
-                    $diagnostics += $line
+                    $diagnostics.Add($line)
                     continue
                 }
 
@@ -583,11 +613,11 @@ function Invoke-ResticWithProgress {
                 }
                 elseif ($json.message_type -eq "summary") {
                     $summary = $json
-                    $diagnostics += $line
+                    $diagnostics.Add($line)
                 }
                 else {
                     # Retain any non-status JSON (e.g. error messages)
-                    $diagnostics += $line
+                    $diagnostics.Add($line)
                 }
             }
             catch {
@@ -610,7 +640,7 @@ function Invoke-ResticWithProgress {
         # Collect any stderr output that was captured asynchronously
         if ($stderrBuilder -and $stderrBuilder.Length -gt 0) {
             $stderrText = $stderrBuilder.ToString()
-            if ($stderrText) { $diagnostics += $stderrText }
+            if ($stderrText) { $diagnostics.Add($stderrText) }
         }
 
         # Release the native process handle
@@ -787,28 +817,30 @@ function Initialize-Repository {
 function Build-BackupArguments {
     param($Config)
 
+    $general = $Config.general
+
     $excludeArgs = @()
     $exclusions = Get-ConfigValue -Config $Config -Path "exclusions" -Default @()
     foreach ($pattern in $exclusions) {
         $excludeArgs += "--exclude=$pattern"
     }
 
-    $excludeCaches = Get-ConfigValue -Config $Config -Path "general.exclude_caches" -Default $false
+    $excludeCaches = if ($null -ne $general.exclude_caches) { $general.exclude_caches } else { $false }
     if ($excludeCaches) { $excludeArgs += "--exclude-caches" }
 
-    $excludeIfPresent = Get-ConfigValue -Config $Config -Path "general.exclude_if_present" -Default @()
+    $excludeIfPresent = if ($null -ne $general.exclude_if_present) { $general.exclude_if_present } else { @() }
     foreach ($marker in $excludeIfPresent) {
         $excludeArgs += "--exclude-if-present=$marker"
     }
 
-    $compression = Get-ConfigValue -Config $Config -Path "general.compression" -Default "auto"
+    $compression = if ($null -ne $general.compression) { $general.compression } else { "auto" }
     $compressionArg = "--compression=$compression"
 
-    $oneFileSystem = Get-ConfigValue -Config $Config -Path "general.one_file_system" -Default $false
+    $oneFileSystem = if ($null -ne $general.one_file_system) { $general.one_file_system } else { $false }
     $ofsArg = @()
     if ($oneFileSystem) { $ofsArg = @("--one-file-system") }
 
-    $tags = Get-ConfigValue -Config $Config -Path "general.tags" -Default @()
+    $tags = if ($null -ne $general.tags) { $general.tags } else { @() }
     $tagArgs = @()
     foreach ($tag in $tags) { $tagArgs += @("--tag", $tag) }
 
@@ -829,7 +861,7 @@ function Start-Backup {
     Write-Header "Run backup"
 
     # Build source list (expand %USERNAME% etc.)
-    $sources = $Config.sources | ForEach-Object { [System.Environment]::ExpandEnvironmentVariables($_) }
+    $sources = @(foreach ($s in $Config.sources) { [System.Environment]::ExpandEnvironmentVariables($s) })
 
     # Validate sources
     $validSources   = @()
@@ -906,15 +938,9 @@ function Start-Backup {
                                         -Password $backend.password -Arguments $backupArgs -Silent
 
                 # Parse summary from output
-                $summaryLine = ($result.Output | Select-String '"message_type":"summary"').Line
-                if ($summaryLine) {
-                    try {
-                        $parsedSummary = $summaryLine | ConvertFrom-Json
-                        $result | Add-Member -NotePropertyName Summary -NotePropertyValue $parsedSummary
-                    }
-                    catch {
-                        Write-Log "Failed to parse backup summary JSON: $_" "WARN"
-                    }
+                $parsedSummary = Find-Summary -Lines $result.Output
+                if ($parsedSummary) {
+                    $result | Add-Member -NotePropertyName Summary -NotePropertyValue $parsedSummary
                 }
             }
         }
@@ -931,12 +957,7 @@ function Start-Backup {
             # Display summary
             $summary = $result.Summary
             if (-not $summary -and $result.Output) {
-                # Try to parse summary from output
-                foreach ($line in $result.Output) {
-                    if ($line -match '"message_type"\s*:\s*"summary"') {
-                        try { $summary = $line | ConvertFrom-Json } catch {}
-                    }
-                }
+                $summary = Find-Summary -Lines $result.Output
             }
 
             if ($summary) {
@@ -1111,11 +1132,7 @@ function Restore-Backup {
 
             $summary = $result.Summary
             if (-not $summary -and $result.Output) {
-                foreach ($line in $result.Output) {
-                    if ($line -match '"message_type"\s*:\s*"summary"') {
-                        try { $summary = $line | ConvertFrom-Json } catch {}
-                    }
-                }
+                $summary = Find-Summary -Lines $result.Output
             }
             if ($summary) {
                 Write-Host ""
@@ -1498,8 +1515,10 @@ function Start-DryRunBackup {
     Write-Info "This will show what would be backed up without actually storing any data."
 
     # Build source list
-    $sources = @($Config.sources | ForEach-Object { [System.Environment]::ExpandEnvironmentVariables($_) } |
-               Where-Object { Test-Path $_ })
+    $sources = @(foreach ($s in $Config.sources) {
+        $expanded = [System.Environment]::ExpandEnvironmentVariables($s)
+        if (Test-Path $expanded) { $expanded }
+    })
 
     if ($sources.Count -eq 0) {
         Write-Err "No valid source paths found."
@@ -1546,11 +1565,7 @@ function Start-DryRunBackup {
 
         $summary = $result.Summary
         if (-not $summary -and $result.Output) {
-            foreach ($line in $result.Output) {
-                if ($line -match '"message_type"\s*:\s*"summary"') {
-                    try { $summary = $line | ConvertFrom-Json } catch {}
-                }
-            }
+            $summary = Find-Summary -Lines $result.Output
         }
 
         if ($summary) {
@@ -1883,16 +1898,16 @@ function Remove-OldLogs {
     param([string]$LogDir, [int]$RetentionDays)
     if (-not (Test-Path $LogDir)) { return }
     $cutoff = (Get-Date).AddDays(-$RetentionDays)
-    Get-ChildItem -Path $LogDir -Filter "*.log" |
-        Where-Object { $_.LastWriteTime -lt $cutoff } |
-        ForEach-Object {
+    foreach ($file in Get-ChildItem -Path $LogDir -Filter "*.log") {
+        if ($file.LastWriteTime -lt $cutoff) {
             try {
-                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
             }
             catch {
-                Write-Warning ("Failed to remove old log file '{0}': {1}" -f $_.FullName, $_.Exception.Message)
+                Write-Warning ("Failed to remove old log file '{0}': {1}" -f $file.FullName, $_.Exception.Message)
             }
         }
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -1907,10 +1922,10 @@ function Show-Banner {
     Write-Host ("=" * 60) -ForegroundColor Cyan
 
     # Show enabled backends
-    $enabled = @()
+    $enabled = [System.Collections.Generic.List[string]]::new()
     if ($Config -and $Config.backends -and $Config.backends.PSObject -and $Config.backends.PSObject.Properties) {
-        $Config.backends.PSObject.Properties | ForEach-Object {
-            if ($_.Value -and $_.Value.enabled) { $enabled += "$($_.Name)" }
+        foreach ($prop in $Config.backends.PSObject.Properties) {
+            if ($prop.Value -and $prop.Value.enabled) { $enabled.Add($prop.Name) }
         }
         if ($enabled.Count -gt 0) {
             Write-Info "Enabled backends: $($enabled -join ', ')"
