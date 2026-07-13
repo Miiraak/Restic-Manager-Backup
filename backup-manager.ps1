@@ -168,7 +168,12 @@ function Write-Log {
     $ts   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$ts][$Level] $Message"
     # Direct .NET call avoids cmdlet overhead (parameter binding, provider resolution)
-    [System.IO.File]::AppendAllText($LogFile, $line + [System.Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    try {
+        [System.IO.File]::AppendAllText($LogFile, $line + [System.Environment]::NewLine, [System.Text.Encoding]::UTF8)
+    }
+    catch {
+        # Logging is best-effort and should not interrupt backup/restore operations
+    }
 }
 
 function Initialize-Log {
@@ -370,17 +375,15 @@ function Get-LocalTargets {
     #>
     $results = [System.Collections.Generic.List[PSCustomObject]]::new()
     try {
-        $disks = Get-CimInstance -ClassName Win32_LogicalDisk
+        $disks = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType=2 OR DriveType=3"
         foreach ($disk in $disks) {
-            if ($disk.DriveType -in @(2, 3)) {
-                $results.Add([PSCustomObject]@{
-                    DeviceID   = $disk.DeviceID
-                    VolumeName = $disk.VolumeName
-                    DriveType  = if ($disk.DriveType -eq 2) { "Removable" } else { "Fixed" }
-                    FreeGB     = [math]::Round($disk.FreeSpace / 1GB, 2)
-                    TotalGB    = [math]::Round($disk.Size / 1GB, 2)
-                })
-            }
+            $results.Add([PSCustomObject]@{
+                DeviceID   = $disk.DeviceID
+                VolumeName = $disk.VolumeName
+                DriveType  = if ($disk.DriveType -eq 2) { "Removable" } else { "Fixed" }
+                FreeGB     = [math]::Round($disk.FreeSpace / 1GB, 2)
+                TotalGB    = [math]::Round($disk.Size / 1GB, 2)
+            })
         }
     }
     catch {
