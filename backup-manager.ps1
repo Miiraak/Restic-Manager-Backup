@@ -6,10 +6,11 @@
     Multi-backend backup tool built on top of restic.
     Supported backends: S3, Swift (OpenStack), SFTP, local disk, USB key.
     Features: progress bar, verbose output, dry-run, snapshot browsing,
-    per-backend selection, config validation, and more.
+    per-backend selection, config validation, backup type selection,
+    partial restore, config editing, and more.
 
 .NOTES
-    Version      : 2.3.0
+    Version      : 3.0.0
     Requirements : restic.exe placed in .\Restic\restic.exe
     Configuration: .\config.json
     Logs         : .\logs\
@@ -26,7 +27,7 @@ $script:BackRequested  = $false
 # -----------------------------------------------------------------------------
 $ScriptRoot  = $PSScriptRoot
 $ConfigFile  = Join-Path $ScriptRoot "config.json"
-$ScriptVersion = "2.3.0"
+$ScriptVersion = "3.0.0"
 
 # -----------------------------------------------------------------------------
 # Helper - colored output
@@ -67,6 +68,25 @@ function Write-Warn {
 function Write-Detail {
     param([string]$Text)
     Write-Host "    $Text" -ForegroundColor DarkGray
+}
+
+# -----------------------------------------------------------------------------
+# Helper - ASCII menu transition
+# -----------------------------------------------------------------------------
+function Write-Transition {
+    param([string]$Target = "")
+    $width = 60
+    Write-Host ""
+    Write-Host ("." * $width) -ForegroundColor DarkGray
+    if ($Target) {
+        Write-Host "  >> $Target" -ForegroundColor DarkCyan
+    }
+    Write-Host ("." * $width) -ForegroundColor DarkGray
+    Write-Host ""
+}
+
+function Write-Separator {
+    Write-Host ("─" * 60) -ForegroundColor DarkGray
 }
 
 # -----------------------------------------------------------------------------
@@ -298,6 +318,337 @@ function Get-ConfigValue {
         if ($null -eq $current) { return $Default }
     }
     return $current
+}
+
+# -----------------------------------------------------------------------------
+# Config editing and reloading from CLI
+# -----------------------------------------------------------------------------
+function Invoke-ConfigReload {
+    <#
+    .SYNOPSIS Reloads config.json and re-validates. Returns new config or $null on failure.
+    #>
+    Write-Step "Reloading configuration..."
+    $newConfig = Import-Config
+    $valid = Test-Config -Config $newConfig
+    if ($valid) {
+        Write-OK "Configuration reloaded successfully."
+        Write-Log "Configuration reloaded" "INFO"
+        return $newConfig
+    }
+    else {
+        Write-Err "Configuration has errors. Keeping previous configuration."
+        Write-Log "Config reload failed validation" "WARN"
+        return $null
+    }
+}
+
+function Edit-ConfigSection {
+    <#
+    .SYNOPSIS Interactive config editor - allows viewing/editing sections from CLI.
+    #>
+    param([ref]$ConfigRef)
+
+    while ($true) {
+        Write-Transition "Configuration Editor"
+        Write-Header "Configuration Editor"
+
+        Write-Host ""
+        Write-Host "  Current config: $ConfigFile" -ForegroundColor Gray
+        Write-Separator
+        Write-Host "  1.  View current configuration"         -ForegroundColor White
+        Write-Host "  2.  Edit source paths"                  -ForegroundColor White
+        Write-Host "  3.  Edit exclusion patterns"            -ForegroundColor White
+        Write-Host "  4.  Edit retention policy"              -ForegroundColor White
+        Write-Host "  5.  Toggle backends (enable/disable)"   -ForegroundColor White
+        Write-Host "  6.  Edit general settings"              -ForegroundColor White
+        Write-Host "  7.  Reload config from disk"            -ForegroundColor White
+        Write-Host "  8.  Open config.json in editor"         -ForegroundColor White
+        Write-Host "  0.  Back"                               -ForegroundColor DarkGray
+        Write-Separator
+
+        $editChoice = Read-Host "  Your choice"
+
+        switch ($editChoice) {
+            "1" { Show-CurrentConfig -Config $ConfigRef.Value }
+            "2" { Edit-Sources -ConfigRef $ConfigRef }
+            "3" { Edit-Exclusions -ConfigRef $ConfigRef }
+            "4" { Edit-Retention -ConfigRef $ConfigRef }
+            "5" { Edit-BackendToggle -ConfigRef $ConfigRef }
+            "6" { Edit-GeneralSettings -ConfigRef $ConfigRef }
+            "7" {
+                $reloaded = Invoke-ConfigReload
+                if ($reloaded) { $ConfigRef.Value = $reloaded }
+            }
+            "8" { Open-ConfigInEditor }
+            "0" { $script:BackRequested = $true; return }
+            default { Write-Err "Invalid choice." }
+        }
+
+        if (-not $script:BackRequested) {
+            Write-Host ""
+            Read-Host "Press Enter to continue" | Out-Null
+        }
+        $script:BackRequested = $false
+    }
+}
+
+function Show-CurrentConfig {
+    param($Config)
+    Write-Host ""
+    Write-Host "  [General]" -ForegroundColor Cyan
+    Write-Detail "  Verbose       : $($Config.general.verbose)"
+    Write-Detail "  Compression   : $($Config.general.compression)"
+    Write-Detail "  One filesystem: $($Config.general.one_file_system)"
+    Write-Detail "  Exclude caches: $($Config.general.exclude_caches)"
+
+    Write-Host ""
+    Write-Host "  [Sources]" -ForegroundColor Cyan
+    $i = 1
+    foreach ($src in $Config.sources) {
+        Write-Detail "  $i. $src"
+        $i++
+    }
+
+    Write-Host ""
+    Write-Host "  [Exclusions]" -ForegroundColor Cyan
+    foreach ($ex in $Config.exclusions) {
+        Write-Detail "  - $ex"
+    }
+
+    Write-Host ""
+    Write-Host "  [Retention]" -ForegroundColor Cyan
+    Write-Detail "  keep_last    : $($Config.retention.keep_last)"
+    Write-Detail "  keep_daily   : $($Config.retention.keep_daily)"
+    Write-Detail "  keep_weekly  : $($Config.retention.keep_weekly)"
+    Write-Detail "  keep_monthly : $($Config.retention.keep_monthly)"
+    Write-Detail "  keep_yearly  : $($Config.retention.keep_yearly)"
+
+    Write-Host ""
+    Write-Host "  [Backends]" -ForegroundColor Cyan
+    foreach ($prop in $Config.backends.PSObject.Properties) {
+        $status = if ($prop.Value.enabled) { "[ON]" } else { "[OFF]" }
+        Write-Detail "  $status $($prop.Name) - $($prop.Value.description)"
+    }
+}
+
+function Edit-Sources {
+    param([ref]$ConfigRef)
+    $config = $ConfigRef.Value
+
+    Write-Host ""
+    Write-Host "  Current sources:" -ForegroundColor Cyan
+    $i = 1
+    foreach ($src in $config.sources) {
+        Write-Host "  $i. $src" -ForegroundColor White
+        $i++
+    }
+    Write-Host ""
+    Write-Host "  [A] Add a source path" -ForegroundColor White
+    Write-Host "  [R] Remove a source path" -ForegroundColor White
+    Write-Host "  [B] Back" -ForegroundColor DarkGray
+
+    $action = Read-Host "  Action"
+    switch ($action.ToUpper()) {
+        "A" {
+            $newPath = Read-Host "  Enter new source path"
+            if (-not [string]::IsNullOrWhiteSpace($newPath)) {
+                $config.sources = @($config.sources) + @($newPath)
+                Save-Config -Config $config
+                Write-OK "Source added: $newPath"
+            }
+        }
+        "R" {
+            $idx = Read-Host "  Enter number to remove"
+            [int]$num = 0
+            if ([int]::TryParse($idx, [ref]$num) -and $num -ge 1 -and $num -le @($config.sources).Count) {
+                $removed = $config.sources[$num - 1]
+                $config.sources = @($config.sources | Where-Object { $_ -ne $removed })
+                Save-Config -Config $config
+                Write-OK "Removed: $removed"
+            }
+            else { Write-Err "Invalid selection." }
+        }
+    }
+}
+
+function Edit-Exclusions {
+    param([ref]$ConfigRef)
+    $config = $ConfigRef.Value
+
+    Write-Host ""
+    Write-Host "  Current exclusions:" -ForegroundColor Cyan
+    $i = 1
+    foreach ($ex in $config.exclusions) {
+        Write-Host "  $i. $ex" -ForegroundColor White
+        $i++
+    }
+    Write-Host ""
+    Write-Host "  [A] Add an exclusion pattern" -ForegroundColor White
+    Write-Host "  [R] Remove an exclusion pattern" -ForegroundColor White
+    Write-Host "  [B] Back" -ForegroundColor DarkGray
+
+    $action = Read-Host "  Action"
+    switch ($action.ToUpper()) {
+        "A" {
+            $newPattern = Read-Host "  Enter exclusion pattern (e.g. '*.tmp')"
+            if (-not [string]::IsNullOrWhiteSpace($newPattern)) {
+                $config.exclusions = @($config.exclusions) + @($newPattern)
+                Save-Config -Config $config
+                Write-OK "Exclusion added: $newPattern"
+            }
+        }
+        "R" {
+            $idx = Read-Host "  Enter number to remove"
+            [int]$num = 0
+            if ([int]::TryParse($idx, [ref]$num) -and $num -ge 1 -and $num -le @($config.exclusions).Count) {
+                $removed = $config.exclusions[$num - 1]
+                $config.exclusions = @($config.exclusions | Where-Object { $_ -ne $removed })
+                Save-Config -Config $config
+                Write-OK "Removed: $removed"
+            }
+            else { Write-Err "Invalid selection." }
+        }
+    }
+}
+
+function Edit-Retention {
+    param([ref]$ConfigRef)
+    $config = $ConfigRef.Value
+
+    Write-Host ""
+    Write-Host "  Current retention policy:" -ForegroundColor Cyan
+    Write-Detail "  1. keep_last    : $($config.retention.keep_last)"
+    Write-Detail "  2. keep_daily   : $($config.retention.keep_daily)"
+    Write-Detail "  3. keep_weekly  : $($config.retention.keep_weekly)"
+    Write-Detail "  4. keep_monthly : $($config.retention.keep_monthly)"
+    Write-Detail "  5. keep_yearly  : $($config.retention.keep_yearly)"
+    Write-Host ""
+
+    $field = Read-Host "  Enter field number to edit (or Enter to skip)"
+    if ([string]::IsNullOrWhiteSpace($field)) { return }
+
+    $fieldMap = @{ "1" = "keep_last"; "2" = "keep_daily"; "3" = "keep_weekly"; "4" = "keep_monthly"; "5" = "keep_yearly" }
+    if (-not $fieldMap.ContainsKey($field)) { Write-Err "Invalid field."; return }
+
+    $fieldName = $fieldMap[$field]
+    $newVal = Read-Host "  New value for $fieldName"
+    [int]$intVal = 0
+    if ([int]::TryParse($newVal, [ref]$intVal) -and $intVal -ge 0) {
+        $config.retention.$fieldName = $intVal
+        Save-Config -Config $config
+        Write-OK "$fieldName set to $intVal"
+    }
+    else { Write-Err "Invalid number." }
+}
+
+function Edit-BackendToggle {
+    param([ref]$ConfigRef)
+    $config = $ConfigRef.Value
+
+    Write-Host ""
+    Write-Host "  Backends:" -ForegroundColor Cyan
+    $i = 1
+    $backendList = @($config.backends.PSObject.Properties)
+    foreach ($prop in $backendList) {
+        $status = if ($prop.Value.enabled) { "[ON] " } else { "[OFF]" }
+        Write-Host "  $i. $status $($prop.Name) - $($prop.Value.description)" -ForegroundColor White
+        $i++
+    }
+    Write-Host ""
+
+    $idx = Read-Host "  Enter number to toggle (or Enter to skip)"
+    [int]$num = 0
+    if ([int]::TryParse($idx, [ref]$num) -and $num -ge 1 -and $num -le $backendList.Count) {
+        $target = $backendList[$num - 1]
+        $target.Value.enabled = -not $target.Value.enabled
+        $newState = if ($target.Value.enabled) { "enabled" } else { "disabled" }
+        Save-Config -Config $config
+        Write-OK "$($target.Name) is now $newState."
+    }
+    else { Write-Err "Invalid selection." }
+}
+
+function Edit-GeneralSettings {
+    param([ref]$ConfigRef)
+    $config = $ConfigRef.Value
+
+    Write-Host ""
+    Write-Host "  General settings:" -ForegroundColor Cyan
+    Write-Host "  1. Verbose        : $($config.general.verbose)" -ForegroundColor White
+    Write-Host "  2. Compression    : $($config.general.compression)" -ForegroundColor White
+    Write-Host "  3. One filesystem : $($config.general.one_file_system)" -ForegroundColor White
+    Write-Host "  4. Exclude caches : $($config.general.exclude_caches)" -ForegroundColor White
+    Write-Host "  5. Log retention  : $($config.general.log_retention_days) days" -ForegroundColor White
+    Write-Host ""
+
+    $field = Read-Host "  Enter field number to edit (or Enter to skip)"
+    switch ($field) {
+        "1" {
+            $config.general.verbose = -not $config.general.verbose
+            Save-Config -Config $config
+            Write-OK "Verbose set to $($config.general.verbose)"
+        }
+        "2" {
+            Write-Info "Options: auto, off, max"
+            $val = Read-Host "  New compression mode"
+            if ($val -in @("auto", "off", "max")) {
+                $config.general.compression = $val
+                Save-Config -Config $config
+                Write-OK "Compression set to $val"
+            }
+            else { Write-Err "Invalid value." }
+        }
+        "3" {
+            $config.general.one_file_system = -not $config.general.one_file_system
+            Save-Config -Config $config
+            Write-OK "One filesystem set to $($config.general.one_file_system)"
+        }
+        "4" {
+            $config.general.exclude_caches = -not $config.general.exclude_caches
+            Save-Config -Config $config
+            Write-OK "Exclude caches set to $($config.general.exclude_caches)"
+        }
+        "5" {
+            $val = Read-Host "  New log retention (days)"
+            [int]$intVal = 0
+            if ([int]::TryParse($val, [ref]$intVal) -and $intVal -gt 0) {
+                $config.general.log_retention_days = $intVal
+                Save-Config -Config $config
+                Write-OK "Log retention set to $intVal days"
+            }
+            else { Write-Err "Invalid number." }
+        }
+    }
+}
+
+function Open-ConfigInEditor {
+    Write-Step "Opening config.json..."
+    try {
+        $editor = $env:EDITOR
+        if (-not $editor) {
+            # Try notepad on Windows
+            $editor = "notepad.exe"
+        }
+        Start-Process -FilePath $editor -ArgumentList $ConfigFile -ErrorAction Stop
+        Write-OK "Opened in $editor. Reload config after saving changes (option 7)."
+    }
+    catch {
+        Write-Err "Could not open editor: $_"
+        Write-Info "Edit manually: $ConfigFile"
+    }
+}
+
+function Save-Config {
+    param($Config)
+    try {
+        $json = $Config | ConvertTo-Json -Depth 10
+        [System.IO.File]::WriteAllText($ConfigFile, $json, [System.Text.Encoding]::UTF8)
+        Write-Log "Configuration saved to disk" "INFO"
+    }
+    catch {
+        Write-Err "Failed to save config: $_"
+        Write-Log "Config save failed: $_" "ERROR"
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -853,15 +1204,103 @@ function Build-BackupArguments {
 }
 
 # -----------------------------------------------------------------------------
-# 2. Run backup (with progress bar and verbose output)
+# 2. Run backup (with backup type selection, progress bar, VSS support)
 # -----------------------------------------------------------------------------
+function Select-BackupType {
+    <#
+    .SYNOPSIS Prompts the user to choose the backup type.
+    Returns a hashtable with Sources (array) and ExtraArgs (array).
+    #>
+    param($Config)
+
+    Write-Host ""
+    Write-Host "  Backup type:" -ForegroundColor White
+    Write-Separator
+    Write-Host "  1. Full backup (all configured sources)"      -ForegroundColor White
+    Write-Host "  2. Specific files or folders"                  -ForegroundColor White
+    Write-Host "  3. Single folder (quick)"                      -ForegroundColor White
+    Write-Host "  4. VSS snapshot (Windows shadow copy)"         -ForegroundColor White
+    Write-Host "  5. Dry-run (preview what would be backed up)"  -ForegroundColor White
+    Write-Host "  B. Back"                                       -ForegroundColor DarkGray
+    Write-Separator
+
+    $typeChoice = Read-Host "  Your choice"
+
+    switch ($typeChoice) {
+        "1" {
+            # Full backup - use all configured sources
+            $sources = @(foreach ($s in $Config.sources) {
+                [System.Environment]::ExpandEnvironmentVariables($s)
+            })
+            return @{ Sources = $sources; ExtraArgs = @(); Type = "Full" }
+        }
+        "2" {
+            # Specific files or folders
+            Write-Host ""
+            Write-Info "Enter file/folder paths to back up (one per line, empty line to finish):"
+            $customSources = [System.Collections.Generic.List[string]]::new()
+            while ($true) {
+                $path = Read-Host "  Path"
+                if ([string]::IsNullOrWhiteSpace($path)) { break }
+                $expanded = [System.Environment]::ExpandEnvironmentVariables($path)
+                $customSources.Add($expanded)
+            }
+            if ($customSources.Count -eq 0) {
+                Write-Err "No paths specified."
+                return $null
+            }
+            return @{ Sources = @($customSources); ExtraArgs = @(); Type = "Selective" }
+        }
+        "3" {
+            # Single folder
+            $folder = Read-Host "  Enter folder path to back up"
+            if ([string]::IsNullOrWhiteSpace($folder)) {
+                Write-Err "No path specified."
+                return $null
+            }
+            $expanded = [System.Environment]::ExpandEnvironmentVariables($folder)
+            return @{ Sources = @($expanded); ExtraArgs = @(); Type = "Single folder" }
+        }
+        "4" {
+            # VSS snapshot (Windows only)
+            $sources = @(foreach ($s in $Config.sources) {
+                [System.Environment]::ExpandEnvironmentVariables($s)
+            })
+            Write-Info "Using Volume Shadow Copy (VSS) for consistent backup."
+            Write-Info "VSS timeout: 120s (default). Files locked by other processes will be captured."
+            return @{ Sources = $sources; ExtraArgs = @("--use-fs-snapshot"); Type = "VSS snapshot" }
+        }
+        "5" {
+            # Dry-run backup
+            $sources = @(foreach ($s in $Config.sources) {
+                [System.Environment]::ExpandEnvironmentVariables($s)
+            })
+            Write-Info "Dry-run mode: no data will be stored, only a preview."
+            return @{ Sources = $sources; ExtraArgs = @("--dry-run"); Type = "Dry-run" }
+        }
+        { $_ -eq "B" -or $_ -eq "b" } {
+            $script:BackRequested = $true
+            return $null
+        }
+        default {
+            Write-Err "Invalid choice."
+            return $null
+        }
+    }
+}
+
 function Start-Backup {
     param($Config, [string]$ResticExe)
 
+    Write-Transition "Backup"
     Write-Header "Run backup"
 
-    # Build source list (expand %USERNAME% etc.)
-    $sources = @(foreach ($s in $Config.sources) { [System.Environment]::ExpandEnvironmentVariables($s) })
+    # Backup type selection
+    $backupType = Select-BackupType -Config $Config
+    if (-not $backupType) { return }
+
+    $sources = $backupType.Sources
+    $extraArgs = $backupType.ExtraArgs
 
     # Validate sources
     $validSources   = @()
@@ -879,11 +1318,13 @@ function Start-Backup {
     }
 
     if ($validSources.Count -eq 0) {
-        Write-Err "No valid source paths found. Check the 'sources' section in config.json."
+        Write-Err "No valid source paths found."
         return
     }
 
-    Write-Info "Sources to back up ($($validSources.Count)):"
+    Write-Host ""
+    Write-Info "Backup type: $($backupType.Type)"
+    Write-Info "Sources ($($validSources.Count)):"
     foreach ($src in $validSources) {
         Write-Detail "- $src"
     }
@@ -923,7 +1364,7 @@ function Start-Backup {
         try {
             if ($verbose) {
                 # Use progress bar with JSON output
-                $backupArgs = @("backup") + $validSources + $excludeArgs + @($compressionArg, "--json") + $ofsArg + $tagArgs
+                $backupArgs = @("backup") + $validSources + $excludeArgs + @($compressionArg, "--json") + $ofsArg + $tagArgs + $extraArgs
 
                 $result = Invoke-ResticWithProgress -ResticExe $ResticExe -Repository $repo `
                                                     -Password $backend.password `
@@ -932,7 +1373,7 @@ function Start-Backup {
             }
             else {
                 # Silent mode
-                $backupArgs = @("backup") + $validSources + $excludeArgs + @($compressionArg, "--json") + $ofsArg + $tagArgs
+                $backupArgs = @("backup") + $validSources + $excludeArgs + @($compressionArg, "--json") + $ofsArg + $tagArgs + $extraArgs
 
                 $result = Invoke-Restic -ResticExe $ResticExe -Repository $repo `
                                         -Password $backend.password -Arguments $backupArgs -Silent
@@ -1066,13 +1507,36 @@ function Show-Snapshots {
     }
 }
 
+
 # -----------------------------------------------------------------------------
-# 4. Restore backup (with include/exclude filters)
+# 4. Restore backup (full, folder, file, with overwrite modes)
 # -----------------------------------------------------------------------------
 function Restore-Backup {
     param($Config, [string]$ResticExe)
 
+    Write-Transition "Restore"
     Write-Header "Restore backup"
+
+    # Restore type selection
+    Write-Host ""
+    Write-Host "  Restore mode:" -ForegroundColor White
+    Write-Separator
+    Write-Host "  1. Full snapshot restore"                     -ForegroundColor White
+    Write-Host "  2. Restore specific folder (subfolder syntax)" -ForegroundColor White
+    Write-Host "  3. Restore specific file(s) (include filter)"  -ForegroundColor White
+    Write-Host "  4. Dry-run restore (preview only)"            -ForegroundColor White
+    Write-Host "  B. Back"                                      -ForegroundColor DarkGray
+    Write-Separator
+
+    $restoreMode = Read-Host "  Your choice"
+    if ($restoreMode -eq "B" -or $restoreMode -eq "b") {
+        $script:BackRequested = $true
+        return
+    }
+    if ($restoreMode -notin @("1", "2", "3", "4")) {
+        Write-Err "Invalid choice."
+        return
+    }
 
     $selected = Select-SingleBackend -Config $Config -Operation "restore"
     if (-not $selected) { return }
@@ -1089,36 +1553,95 @@ function Restore-Backup {
         Invoke-Restic -ResticExe $ResticExe -Repository $repo `
                       -Password $backend.password -Arguments @("snapshots")
 
-        $snapshotId  = Read-Host "Enter snapshot ID to restore, 'latest', or leave empty to cancel"
+        Write-Host ""
+        $snapshotId = Read-Host "Enter snapshot ID to restore, 'latest', or leave empty to cancel"
         if ([string]::IsNullOrWhiteSpace($snapshotId)) {
             Write-Info "Restore cancelled."
             return
         }
 
-        $restorePath = Read-Host "Enter restore destination path (or leave empty to cancel)"
+        # Build the snapshot reference (with optional subfolder)
+        $snapshotRef = $snapshotId
+        $filterArgs = @()
+        $extraRestoreArgs = @()
 
+        switch ($restoreMode) {
+            "2" {
+                # Subfolder restore using snapshot:subfolder syntax
+                Write-Host ""
+                Write-Info "Browse the snapshot to find the folder path:"
+                Write-Info "  Tip: Use 'restic ls <snapshot>' to list contents."
+                Write-Host ""
+                Write-Step "Listing snapshot contents to help identify paths..."
+                Invoke-Restic -ResticExe $ResticExe -Repository $repo `
+                -Password $backend.password -Arguments @("ls", $snapshotId, "--long")
+                Write-Host ""
+                $subfolder = Read-Host "  Enter subfolder path (e.g. /home/user/Documents)"
+                if (-not [string]::IsNullOrWhiteSpace($subfolder)) {
+                    $subfolder = $subfolder.TrimEnd('/', '\')
+                    $snapshotRef = "${snapshotId}:${subfolder}"
+                    Write-Info "Will restore: $snapshotRef"
+                }
+            }
+            "3" {
+                # File restore using --include
+                Write-Host ""
+                Write-Info "Enter file paths or patterns to include (one per line, empty to finish):"
+                Write-Info "  Examples: /path/to/file.txt, *.docx, /Documents/report*"
+                while ($true) {
+                    $incPath = Read-Host "  Include"
+                    if ([string]::IsNullOrWhiteSpace($incPath)) { break }
+                    $filterArgs += @("--include", $incPath)
+                }
+                if ($filterArgs.Count -eq 0) {
+                    Write-Err "No include patterns specified."
+                    return
+                }
+            }
+            "4" {
+                # Dry-run mode
+                $extraRestoreArgs += @("--dry-run", "--verbose=2")
+                Write-Info "Dry-run mode: no files will be written."
+            }
+        }
+
+        # Destination path
+        $restorePath = Read-Host "Enter restore destination path (or leave empty to cancel)"
         if ([string]::IsNullOrWhiteSpace($restorePath)) {
             Write-Err "Restore path cannot be empty."
             return
         }
 
-        # Optional include/exclude filters
-        $filterArgs = @()
+        # Overwrite mode selection (not for dry-run)
+        if ($restoreMode -ne "4") {
+            Write-Host ""
+            Write-Host "  Overwrite mode:" -ForegroundColor White
+            Write-Host "  1. Always overwrite (default)"           -ForegroundColor White
+            Write-Host "  2. Only if changed (skip matching)"      -ForegroundColor White
+            Write-Host "  3. Only if newer (by modification time)" -ForegroundColor White
+            Write-Host "  4. Never overwrite existing files"        -ForegroundColor White
+            $overwriteChoice = Read-Host "  Choice (1-4, default: 1)"
+
+            switch ($overwriteChoice) {
+                "2" { $extraRestoreArgs += @("--overwrite", "if-changed") }
+                "3" { $extraRestoreArgs += @("--overwrite", "if-newer") }
+                "4" { $extraRestoreArgs += @("--overwrite", "never") }
+            }
+        }
+
+        # Optional exclude filter (for full and subfolder modes)
+        if ($restoreMode -in @("1", "2") -and $filterArgs.Count -eq 0) {
+            $excludePattern = Read-Host "Exclude pattern (e.g. '*.tmp') or press Enter to skip"
+            if (-not [string]::IsNullOrWhiteSpace($excludePattern)) {
+                $filterArgs += @("--exclude", $excludePattern)
+            }
+        }
+
         Write-Host ""
-        Write-Info "Optional: You can filter which files to restore."
-        $includePattern = Read-Host "Include pattern (e.g. '*.docx') or press Enter to skip"
-        if (-not [string]::IsNullOrWhiteSpace($includePattern)) {
-            $filterArgs += @("--include", $includePattern)
-        }
-        $excludePattern = Read-Host "Exclude pattern (e.g. '*.tmp') or press Enter to skip"
-        if (-not [string]::IsNullOrWhiteSpace($excludePattern)) {
-            $filterArgs += @("--exclude", $excludePattern)
-        }
+        Write-Step "Restoring '$snapshotRef' to '$restorePath'..."
+        Write-Log "Restoring [$name] snapshot $snapshotRef to $restorePath (mode: $restoreMode)"
 
-        Write-Step "Restoring snapshot '$snapshotId' to '$restorePath'..."
-        Write-Log "Restoring [$name] snapshot $snapshotId to $restorePath"
-
-        $restoreArgs = @("restore", $snapshotId, "--target", $restorePath, "--json") + $filterArgs
+        $restoreArgs = @("restore", $snapshotRef, "--target", $restorePath, "--json") + $filterArgs + $extraRestoreArgs
 
         $result = Invoke-ResticWithProgress -ResticExe $ResticExe -Repository $repo `
                                             -Password $backend.password `
@@ -1127,7 +1650,12 @@ function Restore-Backup {
                                             -ActivityName "Restore from $name"
 
         if ($result.ExitCode -eq 0) {
-            Write-OK "Restore completed successfully."
+            if ($restoreMode -eq "4") {
+                Write-OK "Dry-run completed (no files were written)."
+            }
+            else {
+                Write-OK "Restore completed successfully."
+            }
             Write-Log "[$name] restore OK" "INFO"
 
             $summary = $result.Summary
@@ -1141,6 +1669,18 @@ function Restore-Backup {
                 if ($null -ne $summary.total_files)     { Write-Detail ("  Total files    : {0}" -f $summary.total_files) }
                 if ($null -ne $summary.bytes_restored)  { Write-Detail ("  Bytes restored : {0:F2} MiB" -f ($summary.bytes_restored / 1MB)) }
                 if ($null -ne $summary.total_bytes)     { Write-Detail ("  Total bytes    : {0:F2} MiB" -f ($summary.total_bytes / 1MB)) }
+            }
+
+            # Show diagnostic output for dry-run
+            if ($restoreMode -eq "4" -and $result.Output) {
+                Write-Host ""
+                Write-Info "Dry-run details:"
+                foreach ($line in $result.Output) {
+                    $lineStr = $line.ToString()
+                    if ($lineStr -and $lineStr[0] -ne '{') {
+                        Write-Detail "  $lineStr"
+                    }
+                }
             }
         }
         else {
@@ -1850,14 +2390,12 @@ function Remove-RemoteRepository {
 function Show-OtherMenu {
     Write-Host ""
     Write-Host ("=" * 60) -ForegroundColor Cyan
-    Write-Host "   Other Options" -ForegroundColor Cyan
+    Write-Host "   Maintenance & Tools" -ForegroundColor Cyan
     Write-Host ("=" * 60) -ForegroundColor Cyan
     Write-Host "  1.  Initialize repository"               -ForegroundColor White
-    Write-Host "  2.  Detect available targets"            -ForegroundColor White
-    Write-Host "  3.  Unlock repository"                   -ForegroundColor White
-    Write-Host "  4.  Browse snapshot contents"            -ForegroundColor White
-    Write-Host "  5.  Dry-run backup (preview)"            -ForegroundColor White
-    Write-Host "  6.  Remove repository"                   -ForegroundColor White
+    Write-Host "  2.  Unlock repository"                   -ForegroundColor White
+    Write-Host "  3.  Detect available targets"            -ForegroundColor White
+    Write-Host "  4.  Remove repository"                   -ForegroundColor White
     Write-Host "  0.  Back to main menu"                   -ForegroundColor DarkGray
     Write-Host ("=" * 60) -ForegroundColor Cyan
 }
@@ -1866,19 +2404,170 @@ function Invoke-OtherMenu {
     param($Config, [string]$ResticExe)
 
     while ($true) {
+        Write-Transition "Maintenance & Tools"
         Show-OtherMenu
         $otherChoice = Read-Host "Enter your choice"
 
         switch ($otherChoice) {
             "1" { Initialize-Repository    -Config $Config -ResticExe $ResticExe }
-            "2" { Show-Targets             -Config $Config }
-            "3" { Unlock-Repository        -Config $Config -ResticExe $ResticExe }
-            "4" { Show-SnapshotContents    -Config $Config -ResticExe $ResticExe }
-            "5" { Start-DryRunBackup       -Config $Config -ResticExe $ResticExe }
-            "6" { Remove-Repository -Config $Config }
+            "2" { Unlock-Repository        -Config $Config -ResticExe $ResticExe }
+            "3" { Show-Targets             -Config $Config }
+            "4" { Remove-Repository -Config $Config }
             "0" { $script:BackRequested = $true; return }
             default {
-                Write-Err "Invalid choice. Please enter a number from 0 to 6."
+                Write-Err "Invalid choice. Please enter a number from 0 to 4."
+                continue
+            }
+        }
+
+        if (-not $script:BackRequested) {
+            Write-Host ""
+            Read-Host "Press Enter to continue" | Out-Null
+        }
+        $script:BackRequested = $false
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Snapshots submenu (consolidates list + browse)
+# -----------------------------------------------------------------------------
+function Invoke-SnapshotsMenu {
+    param($Config, [string]$ResticExe)
+
+    while ($true) {
+        Write-Transition "Snapshots"
+        Write-Header "Snapshots"
+
+        Write-Host ""
+        Write-Host "  1.  List all snapshots"                  -ForegroundColor White
+        Write-Host "  2.  Browse snapshot contents"            -ForegroundColor White
+        Write-Host "  3.  Find files across snapshots"         -ForegroundColor White
+        Write-Host "  4.  Compare snapshots (diff)"            -ForegroundColor White
+        Write-Host "  0.  Back"                                -ForegroundColor DarkGray
+        Write-Separator
+
+        $snapChoice = Read-Host "  Your choice"
+
+        switch ($snapChoice) {
+            "1" { Show-Snapshots         -Config $Config -ResticExe $ResticExe }
+            "2" { Show-SnapshotContents  -Config $Config -ResticExe $ResticExe }
+            "3" { Find-InSnapshots       -Config $Config -ResticExe $ResticExe }
+            "4" { Compare-Snapshots      -Config $Config -ResticExe $ResticExe }
+            "0" { $script:BackRequested = $true; return }
+            default {
+                Write-Err "Invalid choice."
+                continue
+            }
+        }
+
+        if (-not $script:BackRequested) {
+            Write-Host ""
+            Read-Host "Press Enter to continue" | Out-Null
+        }
+        $script:BackRequested = $false
+    }
+}
+
+function Find-InSnapshots {
+    param($Config, [string]$ResticExe)
+
+    Write-Header "Find files across snapshots"
+
+    $selected = Select-SingleBackend -Config $Config -Operation "find"
+    if (-not $selected) { return }
+
+    $name    = $selected.Name
+    $backend = $selected.Value
+
+    $repo = Resolve-Repository -BackendName $name -Backend $backend
+    if (-not $repo) { return }
+
+    $pattern = Read-Host "Enter file name or pattern to search for"
+    if ([string]::IsNullOrWhiteSpace($pattern)) {
+        Write-Info "Search cancelled."
+        return
+    }
+
+    Write-Step "Searching for '$pattern' in [$name]..."
+    Write-Log "Finding '$pattern' in [$name]"
+
+    Set-BackendEnv -Backend $backend
+    try {
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo ` `
+                              -Password $backend.password -Arguments @("find", $pattern)
+    }
+    finally {
+        Clear-BackendEnv -Backend $backend
+    }
+}
+
+function Compare-Snapshots {
+    param($Config, [string]$ResticExe)
+
+    Write-Header "Compare snapshots (diff)"
+
+    $selected = Select-SingleBackend -Config $Config -Operation "diff"
+    if (-not $selected) { return }
+
+    $name    = $selected.Name
+    $backend = $selected.Value
+
+    $repo = Resolve-Repository -BackendName $name -Backend $backend
+    if (-not $repo) { return }
+
+    Set-BackendEnv -Backend $backend
+    try {
+        Write-Step "Listing snapshots for [$name]..."
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo ` `
+                              -Password $backend.password -Arguments @("snapshots")
+
+        Write-Host ""
+        $snap1 = Read-Host "Enter first snapshot ID (older)"
+        if ([string]::IsNullOrWhiteSpace($snap1)) { Write-Info "Cancelled."; return }
+
+        $snap2 = Read-Host "Enter second snapshot ID (newer, or 'latest')"
+        if ([string]::IsNullOrWhiteSpace($snap2)) { Write-Info "Cancelled."; return }
+
+        Write-Step "Comparing $snap1 vs $snap2..."
+        Write-Log "Diff [$name] $snap1 vs $snap2"
+
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo ` `
+                              -Password $backend.password -Arguments @("diff", $snap1, $snap2)
+    }
+    finally {
+        Clear-BackendEnv -Backend $backend
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Repository health (consolidates verify + stats)
+# -----------------------------------------------------------------------------
+function Invoke-RepositoryHealth {
+    param($Config, [string]$ResticExe)
+
+    while ($true) {
+        Write-Transition "Repository Health"
+        Write-Header "Repository Health"
+
+        Write-Host ""
+        Write-Host "  1.  Verify integrity (check)"          -ForegroundColor White
+        Write-Host "  2.  Repository statistics"              -ForegroundColor White
+        Write-Host "  3.  Full health check (verify + stats)" -ForegroundColor White
+        Write-Host "  0.  Back"                               -ForegroundColor DarkGray
+        Write-Separator
+
+        $healthChoice = Read-Host "  Your choice"
+
+        switch ($healthChoice) {
+            "1" { Test-Repository -Config $Config -ResticExe $ResticExe }
+            "2" { Show-Stats      -Config $Config -ResticExe $ResticExe }
+            "3" {
+                Test-Repository -Config $Config -ResticExe $ResticExe
+                Show-Stats      -Config $Config -ResticExe $ResticExe
+            }
+            "0" { $script:BackRequested = $true; return }
+            default {
+                Write-Err "Invalid choice."
                 continue
             }
         }
@@ -1950,15 +2639,15 @@ function Show-Banner {
 function Show-Menu {
     Write-Host ""
     Write-Host ("=" * 60) -ForegroundColor Cyan
-    Write-Host "   Restic Manager Backup - Multi-backend CLI" -ForegroundColor Cyan
+    Write-Host "   Restic Manager Backup v$ScriptVersion" -ForegroundColor Cyan
     Write-Host ("=" * 60) -ForegroundColor Cyan
-    Write-Host "  1.  Run backup"                          -ForegroundColor White
-    Write-Host "  2.  List snapshots"                      -ForegroundColor White
-    Write-Host "  3.  Restore backup"                      -ForegroundColor White
-    Write-Host "  4.  Prune repository"                    -ForegroundColor White
-    Write-Host "  5.  Verify repository"                   -ForegroundColor White
-    Write-Host "  6.  Repository statistics"               -ForegroundColor White
-    Write-Host "  7.  Other options..."                    -ForegroundColor White
+    Write-Host "  1.  Backup"                              -ForegroundColor White
+    Write-Host "  2.  Restore"                             -ForegroundColor White
+    Write-Host "  3.  Snapshots"                           -ForegroundColor White
+    Write-Host "  4.  Prune / retention"                   -ForegroundColor White
+    Write-Host "  5.  Repository health"                   -ForegroundColor White
+    Write-Host "  6.  Configuration"                       -ForegroundColor White
+    Write-Host "  7.  Maintenance & tools"                 -ForegroundColor White
     Write-Host "  0.  Quit"                                -ForegroundColor DarkGray
     Write-Host ("=" * 60) -ForegroundColor Cyan
 }
@@ -1994,15 +2683,18 @@ while ($true) {
 
     switch ($choice) {
         "1"  { Start-Backup           -Config $Config -ResticExe $ResticExe }
-        "2"  { Show-Snapshots         -Config $Config -ResticExe $ResticExe }
-        "3"  { Restore-Backup         -Config $Config -ResticExe $ResticExe }
+        "2"  { Restore-Backup         -Config $Config -ResticExe $ResticExe }
+        "3"  { Invoke-SnapshotsMenu   -Config $Config -ResticExe $ResticExe }
         "4"  { Invoke-Prune           -Config $Config -ResticExe $ResticExe }
-        "5"  { Test-Repository        -Config $Config -ResticExe $ResticExe }
-        "6"  { Show-Stats             -Config $Config -ResticExe $ResticExe }
+        "5"  { Invoke-RepositoryHealth -Config $Config -ResticExe $ResticExe }
+        "6"  { Edit-ConfigSection     -ConfigRef ([ref]$Config) }
         "7"  { Invoke-OtherMenu       -Config $Config -ResticExe $ResticExe }
         "0"  {
             Write-Log "Session ended by user"
-            Write-Host "`nGoodbye!" -ForegroundColor Cyan
+            Write-Host ""
+            Write-Host ("=" * 60) -ForegroundColor Cyan
+            Write-Host "  Goodbye! Stay backed up." -ForegroundColor Cyan
+            Write-Host ("=" * 60) -ForegroundColor Cyan
             exit 0
         }
         default {
