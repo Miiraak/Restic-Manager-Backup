@@ -256,108 +256,88 @@ At startup, a banner displays the version, enabled backends, and source count. T
 
 ```
 ============================================================
-   Restic Manager Backup - Multi-backend CLI
+   Restic Manager Backup v3.0.0
 ============================================================
-  1.  Run backup
-  2.  List snapshots
-  3.  Restore backup
-  4.  Prune repository
-  5.  Verify repository
-  6.  Repository statistics
-  7.  Other options...
+  1.  Backup
+  2.  Restore
+  3.  Snapshots
+  4.  Prune / retention
+  5.  Repository health
+  6.  Configuration
+  7.  Maintenance & tools
   0.  Quit
-============================================================
-```
-
-Selecting **option 7** opens the **Other options** sub-menu:
-
-```
-============================================================
-   Other Options
-============================================================
-  1.  Initialize repository
-  2.  Detect available targets
-  3.  Unlock repository
-  4.  Browse snapshot contents
-  5.  Dry-run backup (preview)
-  6.  Remove repository
-  0.  Back to main menu
 ============================================================
 ```
 
 ### Main Menu
 
-#### Option 1 -- Run backup
+#### Option 1 -- Backup
 
-Runs an incremental, deduplicated backup. You can select specific backends or run all enabled backends at once.
-- A colored **ASCII progress bar** shows file count, bytes processed, and the current file being backed up (when `verbose` is enabled).
-- Network backends (S3, Swift, SFTP) are skipped if no network is available.
-- Compression mode is configurable via `config.json` (`"auto"`, `"off"`, or `"max"`).
-- An enhanced **per-backend summary table** is displayed after completion (files new/changed, data added, duration, snapshot ID).
-- Elapsed time is shown for each backend.
+Presents a **backup type selection** submenu:
+1. **Full backup** -- Back up all configured sources
+2. **Specific files or folders** -- Enter custom paths interactively
+3. **Single folder** -- Quick backup of one folder
+4. **VSS snapshot** -- Use Windows Volume Shadow Copy for consistent backups of locked files
+5. **Dry-run** -- Preview what would be backed up without writing data
 
-#### Option 2 -- List snapshots
+After selecting the type, choose backends. A colored **ASCII progress bar** shows progress. An enhanced **per-backend summary table** is displayed after completion.
 
-Displays a list of all available snapshots in each enabled backend.
+#### Option 2 -- Restore
 
-#### Option 3 -- Restore backup
+Presents a **restore mode selection** submenu:
+1. **Full snapshot restore** -- Restore the entire snapshot
+2. **Restore specific folder** -- Uses restic's `snapshot:subfolder` syntax to restore a single directory tree
+3. **Restore specific file(s)** -- Uses `--include` patterns to restore individual files
+4. **Dry-run restore** -- Preview what would be restored without writing any files
 
-1. Select the source backend.
-2. Choose the snapshot ID (or `latest`).
-3. Enter the destination directory.
-4. Optionally specify **include/exclude patterns** to restore only specific files or skip certain paths.
-5. A real-time **ASCII progress bar** displays restore progress, followed by a restore summary on completion.
+After selecting the mode, choose the overwrite behavior:
+- Always overwrite (default)
+- Only if changed (skip matching files)
+- Only if newer (by modification time)
+- Never overwrite existing files
 
-#### Option 4 -- Prune repository
+A real-time **ASCII progress bar** shows restore progress, followed by a restore summary.
+
+#### Option 3 -- Snapshots
+
+Opens a submenu for snapshot management:
+1. **List all snapshots** -- Display snapshots across backends
+2. **Browse snapshot contents** -- List files in a specific snapshot (`restic ls`)
+3. **Find files across snapshots** -- Search for a file by name (`restic find`)
+4. **Compare snapshots (diff)** -- Show differences between two snapshots
+
+#### Option 4 -- Prune / retention
 
 Opens a sub-menu with two options:
-1. **Prune by retention policy** -- Displays the current retention policy and asks for **Y/N confirmation** before proceeding. Applies the policy defined in `config.json` and removes old unused snapshots/packs.
-2. **Delete specific snapshot** -- Lists snapshots for a selected backend and lets you delete a specific snapshot by ID (with confirmation).
+1. **Prune by retention policy** -- Applies the policy from `config.json` with Y/N confirmation
+2. **Delete specific snapshot** -- Remove a single snapshot by ID
 
-#### Option 5 -- Verify repository
+#### Option 5 -- Repository health
 
-Runs `restic check` to verify data integrity in each backend.
+Consolidated health checks:
+1. **Verify integrity** -- Run `restic check` on repositories
+2. **Repository statistics** -- Display storage stats (size, deduplication)
+3. **Full health check** -- Run both verify and stats together
 
-#### Option 6 -- Statistics
+#### Option 6 -- Configuration
 
-Displays storage statistics (total size, deduplication) for each backend.
+Interactive config editor without leaving the CLI:
+1. **View current configuration** -- Display all settings
+2. **Edit source paths** -- Add/remove backup sources
+3. **Edit exclusion patterns** -- Add/remove exclusion patterns
+4. **Edit retention policy** -- Change keep_last, keep_daily, etc.
+5. **Toggle backends** -- Enable/disable backends
+6. **Edit general settings** -- Toggle verbose, change compression, etc.
+7. **Reload config from disk** -- Re-read config.json after external edits
+8. **Open config.json in editor** -- Launch external editor
 
-#### Option 7 -- Other options
+#### Option 7 -- Maintenance & tools
 
-Opens the sub-menu described above.
-
-### Other Options Sub-Menu
-
-#### Option 1 -- Initialize repository
-
-Creates a new restic repository on each enabled backend.  
-If the repository already exists, this operation is silently skipped.  
-**Run once per backend.**
-
-#### Option 2 -- Detect available targets
-
-Lists:
-- All local and removable drives (letter, label, type, free/total space)
-- Whether the configured USB drive is present
-- Network availability
-
-#### Option 3 -- Unlock repository
-
-Removes stale locks from restic repositories. Useful when a previous operation was interrupted and left a lock behind.
-
-#### Option 4 -- Browse snapshot contents
-
-Lists the files inside a specific snapshot using `restic ls`. Select a backend and snapshot ID to explore its contents.
-
-#### Option 5 -- Dry-run backup (preview)
-
-Simulates a backup without actually writing any data. Shows what files **would** be backed up, allowing you to verify your sources and exclusions before committing.
-
-#### Option 6 -- Remove repository
-
-Permanently deletes a restic repository. Opens a sub-menu with two options:
-1. **Remove local repository** (local / USB) -- Deletes the repository folder from the local disk or USB drive after safety checks (won't delete drive roots or the script directory, and verifies the target is a valid restic repository).
-2. **Remove remote repository** (S3 / Swift / SFTP) -- Displays instructions and provider-specific commands for removing remote repositories, since they cannot be deleted directly by the script.
+Utility operations:
+1. **Initialize repository** -- Create new restic repos on backends (run once per backend)
+2. **Unlock repository** -- Remove stale locks from interrupted operations
+3. **Detect available targets** -- List drives, USB status, and network availability
+4. **Remove repository** -- Permanently delete local or remote repositories (with safety checks)
 
 ---
 
@@ -366,13 +346,13 @@ Permanently deletes a restic repository. Opens a sub-menu with two options:
 Here is a recommended workflow:
 
 ```
-1. [First time only] Initialize repositories (Main Menu > option 7 > Other options > option 1)
+1. [First time only] Initialize repositories (Maintenance & tools > option 1)
 2. Connect the USB drive
-3. Run backup (Main Menu > option 1)
+3. Run backup (Backup > select type > select backends)
    |-- Backend "local"  -> C:\...\repos\local\
    |-- Backend "usb"    -> E:\ResticRepo\  (USB drive)
    +-- Backend "s3"     -> s3:https://...  (cloud, if network available)
-4. Verify repositories (option 5) -- periodically
+4. Repository health (option 5) -- periodically
 5. Prune (option 4) -- weekly or monthly
 ```
 

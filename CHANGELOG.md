@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.0] - 2026-07-13
+
+### Added
+- **Backup type selection**: New submenu lets you choose between full backup, specific files/folders, single folder, VSS snapshot (Windows shadow copy), or dry-run preview
+- **Enhanced restore modes**: Restore now supports full snapshot, specific folder (using restic's `snapshot:subfolder` syntax), specific file(s) via include patterns, and dry-run restore preview
+- **Overwrite mode selection**: Restore prompts for overwrite behavior (always, if-changed, if-newer, never) per restic documentation
+- **Configuration editor**: New CLI-based config editor (menu option 6) for viewing and editing sources, exclusions, retention policy, backend toggles, and general settings without leaving the app
+- **Config reload**: Reload config.json from disk at any time via the config editor
+- **Snapshots submenu**: Consolidated snapshot management with list, browse, find (search files across snapshots), and diff (compare two snapshots)
+- **Repository health submenu**: Consolidated verify + statistics into a single "Repository Health" menu with individual or combined check options
+- **Menu transitions**: ASCII-based visual transitions between menus for better navigation clarity
+- **Save config to disk**: Changes made in the config editor are persisted to config.json
+
+### Changed
+- **Reorganized main menu**: Streamlined from 7+6 items across two menus to a cleaner 7-item structure: Backup, Restore, Snapshots, Prune, Repository Health, Configuration, Maintenance & Tools
+- **Removed redundant menu items**: "List snapshots" and "Browse snapshot contents" consolidated into Snapshots submenu; "Verify" and "Statistics" consolidated into Repository Health; "Dry-run backup" moved into backup type selection
+- **Maintenance menu**: Simplified to 4 items (Initialize, Unlock, Detect targets, Remove repository)
+- **Version bumped** to 3.0.0
+
+---
+
 ## [2.3.0] - 2026-07-12
 
 ### Changed
