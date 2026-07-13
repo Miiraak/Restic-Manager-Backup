@@ -462,7 +462,9 @@ function Edit-Sources {
             [int]$num = 0
             if ([int]::TryParse($idx, [ref]$num) -and $num -ge 1 -and $num -le @($config.sources).Count) {
                 $removed = $config.sources[$num - 1]
-                $config.sources = @($config.sources | Where-Object { $_ -ne $removed })
+                $sourcesList = [System.Collections.ArrayList]@($config.sources)
+                $sourcesList.RemoveAt($num - 1)
+                $config.sources = @($sourcesList)
                 Save-Config -Config $config
                 Write-OK "Removed: $removed"
             }
@@ -502,7 +504,9 @@ function Edit-Exclusions {
             [int]$num = 0
             if ([int]::TryParse($idx, [ref]$num) -and $num -ge 1 -and $num -le @($config.exclusions).Count) {
                 $removed = $config.exclusions[$num - 1]
-                $config.exclusions = @($config.exclusions | Where-Object { $_ -ne $removed })
+                $exclusionsList = [System.Collections.ArrayList]@($config.exclusions)
+                $exclusionsList.RemoveAt($num - 1)
+                $config.exclusions = @($exclusionsList)
                 Save-Config -Config $config
                 Write-OK "Removed: $removed"
             }
@@ -1578,7 +1582,8 @@ function Restore-Backup {
                 Write-Host ""
                 $subfolder = Read-Host "  Enter subfolder path (e.g. /home/user/Documents)"
                 if (-not [string]::IsNullOrWhiteSpace($subfolder)) {
-                    $subfolder = $subfolder.TrimEnd('/', '\')
+                    $trimmed = $subfolder.TrimEnd('/', '\')
+                    $subfolder = if ([string]::IsNullOrEmpty($trimmed)) { $subfolder } else { $trimmed }
                     $snapshotRef = "${snapshotId}:${subfolder}"
                     Write-Info "Will restore: $snapshotRef"
                 }
@@ -2493,7 +2498,7 @@ function Find-InSnapshots {
 
     Set-BackendEnv -Backend $backend
     try {
-        Invoke-Restic -ResticExe $ResticExe -Repository $repo ` `
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
                               -Password $backend.password -Arguments @("find", $pattern)
     }
     finally {
@@ -2518,7 +2523,7 @@ function Compare-Snapshots {
     Set-BackendEnv -Backend $backend
     try {
         Write-Step "Listing snapshots for [$name]..."
-        Invoke-Restic -ResticExe $ResticExe -Repository $repo ` `
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
                               -Password $backend.password -Arguments @("snapshots")
 
         Write-Host ""
@@ -2531,7 +2536,7 @@ function Compare-Snapshots {
         Write-Step "Comparing $snap1 vs $snap2..."
         Write-Log "Diff [$name] $snap1 vs $snap2"
 
-        Invoke-Restic -ResticExe $ResticExe -Repository $repo ` `
+        Invoke-Restic -ResticExe $ResticExe -Repository $repo `
                               -Password $backend.password -Arguments @("diff", $snap1, $snap2)
     }
     finally {
